@@ -1,6 +1,10 @@
 # Logs
 logs
 *.log
+
+# Временные файлы запусков в корне проекта (логи сборки, сообщения коммитов).
+/_*.log
+/_*.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
