@@ -1,0 +1,209 @@
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  cursor: none;
+  user-select: none;
+  font-family: "Segoe UI", sans-serif;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+html.preview-frame,
+html.preview-frame body {
+  cursor: default;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+}
+
+#layer-bg {
+  z-index: 1;
+  background: linear-gradient(180deg, #141414 0%, #000 100%);
+  opacity: 1;
+  transition: opacity var(--sl-ms, 280ms) ease;
+}
+
+#layer-bg.visible {
+  opacity: 1;
+}
+
+#layer-bg:not(.visible) {
+  opacity: 0;
+}
+
+#layer-bg video,
+#layer-bg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+#layer-overlay {
+  z-index: 2;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms ease;
+}
+
+#layer-text {
+  z-index: 3;
+  pointer-events: none;
+}
+
+.text-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 8vw;
+  overflow: hidden;
+  will-change: opacity, transform, filter, clip-path;
+  opacity: 0;
+  transform: translateY(16px);
+  color: var(--sl-text-color, #ffffff);
+  font-family: var(--sl-font-family, "Segoe UI", sans-serif);
+  font-weight: var(--sl-font-weight, 600);
+  -webkit-text-stroke: var(--sl-stroke, none);
+  transition: var(--sl-transition, opacity 280ms ease, transform 280ms ease);
+}
+
+.text-pane.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Контент слайда: автофит задаёт font-size на этом блоке (дети — в em). */
+.slide-content {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.28em;
+  width: 100%;
+  max-width: 100%;
+  font-size: clamp(14px, 2.6vw, 64px);
+  line-height: 1.2;
+  text-align: var(--sl-align, center);
+}
+
+.slide-title {
+  margin-bottom: 0.45em;
+  font-size: 0.5em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  text-align: var(--sl-align, center);
+  max-width: 100%;
+}
+
+.slide-body {
+  width: 100%;
+  max-width: 100%;
+  font-size: 1em;
+  line-height: 1.22;
+  font-weight: var(--sl-font-weight, 600);
+  text-align: var(--sl-align, center);
+  text-shadow: var(--sl-text-shadow, 0 2px 12px rgba(0, 0, 0, 0.65));
+  overflow-wrap: anywhere;
+}
+
+.slide-body div {
+  overflow-wrap: anywhere;
+}
+
+.slide-body div + div {
+  margin-top: 0.18em;
+}
+
+/* Подпись библейского стиха (ссылка/номер) */
+.bible-caption {
+  font-size: 0.5em;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  opacity: 0.85;
+  text-shadow: var(--sl-text-shadow, 0 2px 12px rgba(0, 0, 0, 0.65));
+  -webkit-text-stroke: none;
+}
+
+.bible-caption.pos-above {
+  text-align: var(--sl-align, center);
+}
+
+.bible-caption.pos-below {
+  text-align: var(--sl-align, center);
+}
+
+.bible-caption.pos-inline-start,
+.bible-caption.pos-inline-end {
+  display: inline-block;
+  font-size: 0.55em;
+  vertical-align: baseline;
+}
+
+.bible-caption.pos-inline-start {
+  margin-right: 0.55em;
+}
+
+.bible-caption.pos-inline-end {
+  margin-left: 0.55em;
+}
+
+.bible-caption.pos-screen-top,
+.bible-caption.pos-corner-left,
+.bible-caption.pos-corner-right,
+.bible-caption.pos-screen-bottom-left,
+.bible-caption.pos-screen-bottom-right {
+  position: absolute;
+  max-width: 40vw;
+  font-size: clamp(14px, 1.9vw, 30px);
+  line-height: 1.2;
+}
+
+.bible-caption.pos-screen-top {
+  top: 3.2vh;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+.bible-caption.pos-corner-left {
+  top: 3.2vh;
+  left: 4vw;
+  text-align: left;
+}
+
+.bible-caption.pos-corner-right {
+  top: 3.2vh;
+  right: 4vw;
+  text-align: right;
+}
+
+.bible-caption.pos-screen-bottom-left {
+  bottom: 3.2vh;
+  left: 4vw;
+  text-align: left;
+}
+
+.bible-caption.pos-screen-bottom-right {
+  bottom: 3.2vh;
+  right: 4vw;
+  text-align: right;
+}

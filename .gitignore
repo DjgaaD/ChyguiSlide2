@@ -1,0 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Готовые файлы релиза (создаёт prepare_release.ps1)
+release/
+
+# ffmpeg и ffprobe для сборки: по 217 МБ, GitHub принимает файлы до 100 МБ.
+# Их нужно положить в src-tauri/binaries/ перед сборкой (см. README.md).
+src-tauri/binaries/
+
+# Исходные данные для импорта: те же файлы лежат в src-tauri/resources/.
+Данные/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

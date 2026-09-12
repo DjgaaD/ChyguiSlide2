@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Чугуй Слайды</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="/src/styles/controller.css" />
+    <script type="module" src="/src/controller/main.ts"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <i data-lucide="book-open-text" class="brand-icon"></i>
+          <span class="brand-title">Чугуй Слайды</span>
+        </div>
+        <nav class="nav" id="nav" role="tablist">
+          <button type="button" class="nav-item active" data-tab="overview">
+            <i data-lucide="layout-dashboard"></i>Дашборд
+          </button>
+          <button type="button" class="nav-item" data-tab="songs">
+            <i data-lucide="music"></i>Песни
+          </button>
+          <button type="button" class="nav-item" data-tab="bible">
+            <i data-lucide="book"></i>Библия
+          </button>
+          <button type="button" class="nav-item" data-tab="announcements">
+            <i data-lucide="megaphone"></i>Объявления
+          </button>
+          <button type="button" class="nav-item" data-tab="broadcast">
+            <i data-lucide="radio"></i>Трансляция
+          </button>
+          <button type="button" class="nav-item" data-tab="settings">
+            <i data-lucide="settings"></i>Настройки
+          </button>
+          <div class="nav-stripe" id="nav-stripe"></div>
+        </nav>
+        <div class="header-actions">
+          <button type="button" id="theme-toggle" class="theme-toggle">Тёмная тема</button>
+        </div>
+      </header>
+
+      <!-- ДАШБОРД -->
+      <section id="view-overview" class="view active" data-view="overview">
+        <div class="col col-wide">
+          <div class="toolbar-row">
+            <label>
+              Сборник
+              <select id="overview-collection" class="field">
+                <option value="all">Все песни</option>
+              </select>
+            </label>
+            <label>
+              Топ
+              <select id="overview-top" class="field">
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>№</th>
+                  <th>Песня</th>
+                  <th>Показы</th>
+                </tr>
+              </thead>
+              <tbody id="overview-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="col muted-panel">
+          <p class="hint">Топ песен по числу показов. Клик по строке откроет песню.</p>
+        </div>
+      </section>
+
+      <!-- ПЕСНИ — макет catalog-songs-mockup.html -->
+      <section id="view-songs" class="view view-songs page-songs" data-view="songs">
+        <aside class="col-left">
+          <div class="col-left-head">
+            <div class="section-label">ПЕСНИ</div>
+            <div class="menu">
+              <button type="button" class="icon-btn" id="sort-menu-btn" data-menu="sort-menu" title="Сортировка">
+                <i data-lucide="arrow-up-down"></i>
+              </button>
+              <div class="menu-panel" id="sort-menu" hidden>
+                <button type="button" data-sort="title"><i data-lucide="a-large-small"></i>По алфавиту</button>
+                <button type="button" data-sort="id"><i data-lucide="hash"></i>По номеру</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="search-block">
+            <input id="song-query" class="field" type="search" placeholder="Поиск…" />
+            <select id="song-collection" class="field">
+              <option value="all">Все песни</option>
+            </select>
+          </div>
+
+          <div class="toolbar">
+            <div class="menu">
+              <button type="button" class="tool-btn" id="song-menu-btn" data-menu="song-menu">
+                <i data-lucide="plus"></i>Песня
+              </button>
+              <div class="menu-panel" id="song-menu" hidden>
+                <button type="button" data-song-action="manual"><i data-lucide="pen-line"></i>Набрать вручную</button>
+                <button type="button" data-song-action="edit"><i data-lucide="pencil"></i>Изменить</button>
+                <button type="button" data-song-action="delete"><i data-lucide="trash-2"></i>Удалить</button>
+              </div>
+            </div>
+            <div class="menu">
+              <button type="button" class="tool-btn" id="collection-menu-btn" data-menu="collection-menu">
+                <i data-lucide="folder"></i>Сборник
+              </button>
+              <div class="menu-panel" id="collection-menu" hidden>
+                <button type="button" data-collection-action="create"><i data-lucide="pen-line"></i>Создать вручную</button>
+                <button type="button" data-collection-action="edit"><i data-lucide="pencil"></i>Изменить</button>
+                <button type="button" data-collection-action="delete"><i data-lucide="trash-2"></i>Удалить</button>
+                <button type="button" data-collection-action="import-json"><i data-lucide="upload"></i>Импорт из JSON</button>
+              </div>
+            </div>
+            <button type="button" class="tool-btn" id="song-to-playlist" title="Добавить в быстрый плейлист">
+              <i data-lucide="list"></i>В плейлист
+            </button>
+          </div>
+
+          <ul id="song-list" class="song-list"></ul>
+        </aside>
+
+        <section class="col-center">
+          <div id="songs-empty" class="empty-hint">Выберите песню, чтобы увидеть слайды.</div>
+          <div id="songs-detail" hidden>
+            <div class="song-heading">
+              <h1 id="song-title"></h1>
+              <div class="sub">Слайды</div>
+            </div>
+            <div class="slide-host" id="slide-host">
+              <div class="slide-stripe" id="slide-stripe"></div>
+              <ul id="slide-list" class="slide-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <aside class="col-right">
+          <div class="preview-title">Предпросмотр экрана</div>
+          <div class="preview-box">
+            <iframe
+              id="songs-preview-frame"
+              class="preview-iframe"
+              src="/display.html?preview=1"
+              title="Предпросмотр"
+            ></iframe>
+            <div class="preview-idle" id="songs-preview-idle">Выберите слайд</div>
+          </div>
+          <button type="button" id="songs-start-show" class="show-btn" disabled>Показать на экране</button>
+        </aside>
+      </section>
+
+      <!-- БИБЛИЯ — макет раздела «Песни» -->
+      <section id="view-bible" class="view view-bible page-bible" data-view="bible">
+        <aside class="col-left">
+          <div class="col-left-head">
+            <div class="section-label">БИБЛИЯ</div>
+          </div>
+
+          <div class="search-block">
+            <input id="bible-search-query" class="field" type="search" placeholder="Поиск стиха или ссылки…" />
+          </div>
+
+          <div id="bible-books" class="book-panel"></div>
+        </aside>
+
+        <section class="col-center">
+          <div class="song-heading">
+            <h1 id="bible-heading">Выберите книгу</h1>
+            <div class="sub" id="bible-chapter-sub">Глава</div>
+          </div>
+          <div id="bible-chapters" class="chapter-grid"></div>
+          <div class="section-label subtle">Стихи</div>
+          <div class="slide-host" id="bible-verse-host">
+            <div class="slide-stripe" id="bible-verse-stripe"></div>
+            <ul id="bible-verses" class="slide-list"></ul>
+          </div>
+        </section>
+
+        <aside class="col-right">
+          <div class="preview-title">Предпросмотр экрана</div>
+          <div class="preview-box">
+            <iframe
+              id="bible-preview-frame"
+              class="preview-iframe"
+              src="/display.html?preview=1"
+              title="Предпросмотр стиха"
+            ></iframe>
+            <div class="preview-idle" id="bible-preview-idle">Выберите стих</div>
+          </div>
+          <button type="button" id="bible-show" class="show-btn" disabled>Показать на экране</button>
+        </aside>
+      </section>
+
+      <!-- ОБЪЯВЛЕНИЯ — макет как в разделе «Песни» -->
+      <section id="view-announcements" class="view view-announcements page-announcements" data-view="announcements">
+        <aside class="col-left">
+          <div class="col-left-head">
+            <div class="section-label">ОБЪЯВЛЕНИЯ</div>
+          </div>
+
+          <div class="search-block">
+            <input id="ann-query" class="field" type="search" placeholder="Поиск…" />
+          </div>
+
+          <div class="toolbar">
+            <button type="button" class="tool-btn" id="ann-quick-btn" title="Быстрое объявление">
+              <i data-lucide="zap"></i>Быстрое объявление
+            </button>
+            <div class="menu">
+              <button type="button" class="tool-btn" id="ann-menu-btn" data-menu="ann-menu">
+                <i data-lucide="plus"></i>Объявление
+              </button>
+              <div class="menu-panel" id="ann-menu" hidden>
+                <button type="button" data-ann-action="create"><i data-lucide="pen-line"></i>Создать вручную</button>
+                <button type="button" data-ann-action="edit"><i data-lucide="pencil"></i>Изменить</button>
+                <button type="button" data-ann-action="delete"><i data-lucide="trash-2"></i>Удалить</button>
+              </div>
+            </div>
+          </div>
+
+          <ul id="ann-list" class="song-list"></ul>
+        </aside>
+
+        <section class="col-center">
+          <div id="ann-empty" class="empty-hint">Выберите объявление, чтобы увидеть слайды.</div>
+          <div id="ann-detail" hidden>
+            <div class="song-heading">
+              <h1 id="ann-heading"></h1>
+              <div class="sub">Слайды</div>
+            </div>
+            <div class="slide-host" id="ann-slide-host">
+              <div class="slide-stripe" id="ann-slide-stripe"></div>
+              <ul id="ann-slide-list" class="slide-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <aside class="col-right">
+          <div class="preview-title">Предпросмотр экрана</div>
+          <div class="preview-box">
+            <iframe
+              id="ann-preview-frame"
+              class="preview-iframe"
+              src="/display.html?preview=1"
+              title="Предпросмотр объявления"
+            ></iframe>
+            <div class="preview-idle" id="ann-preview-idle">Выберите слайд</div>
+          </div>
+          <button type="button" id="ann-show" class="show-btn" disabled>Показать на экране</button>
+        </aside>
+      </section>
+
+      <!-- Быстрое объявление (модальное окно) -->
+      <dialog id="ann-quick" class="modal">
+        <div class="modal-card compact">
+          <h2 class="modal-title">Быстрое объявление</h2>
+          <div class="ann-quick-tabs" role="tablist">
+            <button type="button" class="ann-quick-tab active" data-annquick-mode="manual">Ручное</button>
+            <button type="button" class="ann-quick-tab" data-annquick-mode="car">Убрать автомобиль</button>
+          </div>
+          <div class="ann-quick-panel active" data-annquick-panel="manual">
+            <label class="editor-field">
+              Текст объявления
+              <textarea id="ann-quick-text" class="field ann-editor" rows="6" placeholder="Текст объявления…"></textarea>
+            </label>
+            <p class="hint">Каждый слайд отделяется пустой строкой.</p>
+          </div>
+          <div class="ann-quick-panel" data-annquick-panel="car" hidden>
+            <label class="editor-field">
+              Госномер автомобиля
+              <input id="ann-quick-plate" class="field" type="text" placeholder="А123ВС" autocomplete="off" />
+            </label>
+            <p class="hint">На экран будет выведено: «Просьба убрать автомобиль госномер: …».</p>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="tool-btn" id="ann-quick-cancel">Отмена</button>
+            <button type="button" class="show-btn" id="ann-quick-show">Показать на экране</button>
+          </div>
+        </div>
+      </dialog>
+
+      <!-- Редактор объявления -->
+      <dialog id="ann-editor" class="modal">
+        <form method="dialog" class="modal-card compact" id="ann-editor-form">
+          <h2 class="modal-title">Объявление</h2>
+          <label class="editor-field grow">
+            Название (только для списка внутри программы)
+            <input id="ann-edit-title" class="field" type="text" autocomplete="off" />
+          </label>
+          <label class="editor-field">
+            Текст слайдов — каждый слайд отделяется пустой строкой
+            <textarea id="ann-edit-text" class="field ann-editor" rows="9"></textarea>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="tool-btn" id="ann-edit-cancel">Отмена</button>
+            <button type="submit" class="show-btn" id="ann-edit-save">Сохранить</button>
+          </div>
+        </form>
+      </dialog>
+
+      <!-- Обновление приложения -->
+      <dialog id="update-dialog" class="modal update-dialog">
+        <div class="modal-card">
+          <h2 class="modal-title" id="update-title">Доступно обновление</h2>
+          <p class="modal-text" id="update-versions">—</p>
+          <p class="hint" id="update-published" hidden></p>
+          <div class="update-notes-wrap">
+            <div class="section-label">Что нового</div>
+            <ul class="update-notes" id="update-notes"></ul>
+          </div>
+          <p class="hint update-error" id="update-error" hidden></p>
+          <div class="update-progress" id="update-progress" hidden>
+            <div class="update-progress-track">
+              <div class="update-progress-bar" id="update-progress-bar"></div>
+            </div>
+            <p class="hint" id="update-progress-label">Скачивание…</p>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="ghost-btn" id="update-skip">Пропустить эту версию</button>
+            <button type="button" class="ghost-btn" id="update-later">Напомнить позже</button>
+            <button type="button" class="show-btn" id="update-install">Обновить</button>
+          </div>
+        </div>
+      </dialog>
+
+      <!-- ТРАНСЛЯЦИЯ -->
+      <section id="view-broadcast" class="view view-broadcast page-broadcast" data-view="broadcast">
+        <aside class="col-left">
+          <div class="col-left-head">
+            <div class="section-label">ПЛЕЙЛИСТЫ</div>
+            <div class="playlist-head-actions">
+              <button type="button" class="icon-btn" id="bc-add-media" title="Добавить медиа">
+                <i data-lucide="plus"></i>
+              </button>
+              <button type="button" class="icon-btn" id="bc-save-playlist" title="Сохранить плейлист">
+                <i data-lucide="save"></i>
+              </button>
+              <button type="button" class="icon-btn" id="bc-reset-quick" title="Сбросить быстрый плейлист">
+                <i data-lucide="rotate-ccw"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="section-label subtle">Быстрый плейлист</div>
+          <ul id="quick-playlist" class="song-list playlist-items"></ul>
+
+          <div class="section-label subtle">Сохранённые</div>
+          <ul id="saved-playlists" class="song-list playlist-items"></ul>
+        </aside>
+
+        <section class="col-center">
+          <div id="bc-empty" class="empty-hint">Выберите элемент плейлиста, чтобы увидеть слайды.</div>
+          <div id="bc-detail" hidden>
+            <div class="song-heading">
+              <h1 id="bc-title"></h1>
+              <div class="sub" id="bc-subtitle">Слайды</div>
+            </div>
+            <div class="slide-host" id="bc-slide-host">
+              <div class="slide-stripe" id="bc-slide-stripe"></div>
+              <ul id="bc-slide-list" class="slide-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <aside class="col-right">
+          <div class="preview-title">Сейчас на экране</div>
+          <div class="preview-box">
+            <iframe
+              id="bc-preview-frame"
+              class="preview-iframe"
+              src="/display.html?preview=1"
+              title="Предпросмотр эфира"
+            ></iframe>
+            <div class="preview-idle" id="bc-preview-idle">Нет сигнала</div>
+          </div>
+
+          <div id="bc-idle-actions" class="broadcast-actions">
+            <button type="button" id="bc-start-show" class="show-btn" disabled>Начать показ</button>
+          </div>
+
+          <div id="bc-live-actions" class="broadcast-actions live-actions" hidden>
+            <button type="button" id="bc-prev" class="tool-btn">‹ Предыдущий</button>
+            <button type="button" id="bc-next" class="tool-btn">Следующий ›</button>
+            <button type="button" id="bc-clear" class="tool-btn">Очистить экран</button>
+            <button type="button" id="bc-end" class="show-btn">Завершить показ</button>
+          </div>
+
+          <div id="bc-media-controls" class="media-controls" hidden>
+            <div class="broadcast-actions">
+              <button type="button" id="bc-media-play" class="tool-btn">Play</button>
+              <button type="button" id="bc-media-pause" class="tool-btn">Пауза</button>
+            </div>
+            <label class="range-label">
+              Громкость
+              <input id="bc-media-volume" type="range" min="0" max="100" value="100" />
+            </label>
+            <label class="range-label">
+              Позиция видео
+              <input id="bc-video-seek" type="range" min="0" max="0" value="0" step="0.1" />
+            </label>
+            <label class="range-label">
+              <input id="bc-video-loop" type="checkbox" /> Зациклить видео
+            </label>
+            <label class="range-label">
+              Затемнение
+              <input id="bc-overlay" type="range" min="0" max="100" value="35" />
+            </label>
+          </div>
+        </aside>
+      </section>
+
+      <!-- НАСТРОЙКИ -->
+      <section id="view-settings" class="view view-settings" data-view="settings">
+        <div class="col col-settings settings-shell">
+          <h1 class="col-heading">Настройки</h1>
+          <div class="settings-layout">
+            <nav class="settings-tabs" role="tablist" aria-label="Категории настроек">
+              <button type="button" class="settings-tab active" data-settings-tab="translation">Трансляция</button>
+              <button type="button" class="settings-tab" data-settings-tab="interface">Интерфейс</button>
+              <button type="button" class="settings-tab" data-settings-tab="styles">Стили</button>
+              <button type="button" class="settings-tab" data-settings-tab="hotkeys">Горячие клавиши</button>
+              <button type="button" class="settings-tab" data-settings-tab="backups">Резервные копии</button>
+              <button type="button" class="settings-tab" data-settings-tab="logs">Журнал</button>
+              <button type="button" class="settings-tab" data-settings-tab="about">О нас</button>
+            </nav>
+            <div class="settings-content">
+
+          <!-- Трансляция: монитор вывода + постоянный фон -->
+          <div class="settings-panel active" data-settings-panel="translation">
+            <div class="settings-block">
+              <h2 class="settings-title">Экран вывода</h2>
+              <p class="hint">Выберите монитор для окна вывода (Display).</p>
+            <div id="monitor-list" class="monitor-list"></div>
+            <label class="settings-check" id="persistent-display-label">
+              <input type="checkbox" id="persistent-display" />
+              <span>Постоянный фон на втором экране</span>
+            </label>
+            <p class="hint" id="persistent-display-hint">
+              Доступно только при выборе внешнего (не основного) монитора. Окно Display
+              открывается при показе слайда или при включении этой опции.
+            </p>
+          </div>
+          </div>
+
+          <!-- Интерфейс -->
+          <div class="settings-panel" data-settings-panel="interface" hidden>
+            <div class="settings-block">
+              <h2 class="settings-title">Интерфейс</h2>
+              <label class="editor-field">Тема
+                <select id="interface-theme" class="field">
+                  <option value="system">Системная</option>
+                  <option value="light">Светлая</option>
+                  <option value="dark">Тёмная</option>
+                </select>
+              </label>
+              <label class="settings-check">
+                <input type="checkbox" id="confirm-close" />
+                <span>Спрашивать подтверждение перед закрытием программы</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Стили: менеджер тем и редактор -->
+          <div class="settings-panel" data-settings-panel="styles" hidden>
+            <div class="settings-block styles-block">
+              <div class="styles-toolbar">
+                <button type="button" class="show-btn" id="style-add">Создать стиль</button>
+                <p class="hint">Стиль задаёт внешний вид показов: цвет и шрифт текста, обводку, переходы и фон.</p>
+              </div>
+              <div id="style-empty" class="empty-hint">Стили ещё не созданы. Нажмите «Создать стиль».</div>
+              <div id="style-editor" class="styles-layout" hidden>
+                <aside class="styles-side">
+                  <div class="section-label subtle">Стили</div>
+                  <ul id="styles-list" class="styles-list"></ul>
+                  <div class="styles-actions">
+                    <button type="button" class="tool-btn" id="style-activate">Применить к показу</button>
+                    <button type="button" class="icon-btn" id="style-delete" title="Удалить стиль">
+                      <i data-lucide="trash-2"></i>
+                    </button>
+                  </div>
+                </aside>
+                <div class="style-editor">
+                  <label class="editor-field grow">
+                    Название стиля
+                    <input id="style-name" class="field" type="text" autocomplete="off" />
+                  </label>
+                  <div class="style-editor-grid">
+                    <fieldset class="settings-legend">
+                      <legend>Текст</legend>
+                      <label class="editor-field">Цвет текста <input id="style-text-color" type="color" /></label>
+                      <label class="editor-field">Шрифт <select id="style-font" class="field"></select></label>
+                      <label class="settings-check"><input type="checkbox" id="style-bold" /><span>Жирный</span></label>
+                      <label class="editor-field">Выравнивание
+                        <select id="style-align" class="field">
+                          <option value="left">По левому краю</option>
+                          <option value="center">По центру</option>
+                          <option value="right">По правому краю</option>
+                          <option value="justify">По ширине</option>
+                        </select>
+                      </label>
+                    </fieldset>
+                    <fieldset class="settings-legend">
+                      <legend>Обводка текста</legend>
+                      <label class="range-label">Толщина <input id="style-stroke-width" type="range" min="0" max="12" step="1" /></label>
+                      <label class="editor-field">Цвет <input id="style-stroke-color" type="color" /></label>
+                      <label class="range-label">Прозрачность <input id="style-stroke-opacity" type="range" min="0" max="100" step="1" /></label>
+                    </fieldset>
+                    <fieldset class="settings-legend">
+                      <legend>Переход</legend>
+                      <label class="editor-field">Анимация
+                        <select id="style-transition" class="field">
+                          <option value="fade">Плавное появление</option>
+                          <option value="crossfade">Наслоение (crossfade)</option>
+                          <option value="fade-slide">Появление со сдвигом</option>
+                          <option value="blur">Размытие → фокус</option>
+                          <option value="stagger">Построчное появление</option>
+                          <option value="none">Без анимации</option>
+                        </select>
+                      </label>
+                      <label class="range-label">Скорость
+                        <span id="style-transition-ms-label"></span>
+                        <input id="style-transition-ms" type="range" min="0" max="2000" step="20" value="280" />
+                      </label>
+                    </fieldset>
+                    <fieldset class="settings-legend">
+                      <legend>Библия</legend>
+                      <label class="settings-check">
+                        <input type="checkbox" id="style-bible-caption-enabled" />
+                        <span>Выводить подпись стиха (ссылку/номер)</span>
+                      </label>
+                      <label class="editor-field disabled">Позиция подписи
+                        <select id="style-bible-caption-position" class="field">
+                          <option value="above">Над текстом</option>
+                          <option value="below">Под текстом</option>
+                          <option value="inline-start">В начале текста (в строку)</option>
+                          <option value="inline-end">В конце текста (в строку)</option>
+                          <option value="screen-top">Сверху экрана (по центру)</option>
+                          <option value="corner-left">В углу экрана, слева</option>
+                          <option value="corner-right">В углу экрана, справа</option>
+                          <option value="screen-bottom-left">Снизу экрана, слева</option>
+                          <option value="screen-bottom-right">Снизу экрана, справа</option>
+                        </select>
+                      </label>
+                    </fieldset>
+                    <fieldset class="settings-legend style-fields">
+                      <legend>Фон</legend>
+                      <div class="style-bg-modes">
+                        <label><input type="radio" name="style-bg-mode" value="color" /> Сплошной цвет</label>
+                        <label><input type="radio" name="style-bg-mode" value="media" /> Картинка / Медиа</label>
+                        <label><input type="radio" name="style-bg-mode" value="random" /> Случайный</label>
+                      </div>
+                      <div id="style-bg-color-wrap">
+                        <label class="editor-field">Цвет фона <input id="style-bg-color" type="color" /></label>
+                      </div>
+                      <div id="style-media-wrap" hidden>
+                        <div class="toolbar-row">
+                          <button type="button" class="tool-btn" id="style-media-add"><i data-lucide="plus"></i> Добавить</button>
+                          <button type="button" class="tool-btn" id="style-media-remove" disabled><i data-lucide="trash-2"></i> Удалить</button>
+                        </div>
+                        <ul id="style-media-list" class="style-media-list"></ul>
+                      </div>
+                    </fieldset>
+                  </div>
+                  <div class="modal-actions">
+                    <button type="button" class="show-btn" id="style-save">Сохранить стиль</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Горячие клавиши -->
+          <div class="settings-panel" data-settings-panel="hotkeys" hidden>
+            <div class="settings-block">
+              <div class="styles-toolbar">
+                <button type="button" class="tool-btn" id="hotkeys-reset">Сбросить по умолчанию</button>
+                <p class="hint">
+                  Кликните по полю и нажмите нужную клавишу. Esc — отмена захвата.
+                  Изменения сохраняются в базу автоматически.
+                </p>
+              </div>
+              <ul id="hotkeys-list" class="hotkeys-list"></ul>
+            </div>
+          </div>
+
+          <!-- Резервные копии -->
+          <div class="settings-panel" data-settings-panel="backups" hidden>
+            <div class="settings-block">
+              <h2 class="settings-title">Резервные копии</h2>
+              <p class="hint">Сохраните копию базы или восстановите данные из ранее созданного файла.</p>
+              <div class="toolbar-row database-actions">
+                <button type="button" class="tool-btn" id="backup-database">Создать резервную копию</button>
+                <button type="button" class="tool-btn" id="restore-database">Восстановить из копии</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Журнал работы приложения -->
+          <div class="settings-panel" data-settings-panel="logs" hidden>
+            <div class="settings-block">
+              <h2 class="settings-title">Журнал работы</h2>
+              <p class="hint">
+                Каждый запуск приложения создаёт отдельный файл журнала: в него попадают
+                действия пользователя, обращения к базе, работа с видео и ошибки.
+                Хранятся последние 10 файлов — самые старые удаляются автоматически.
+              </p>
+              <p class="hint" id="logs-dir-hint">Каталог журналов: —</p>
+              <div class="toolbar-row database-actions">
+                <button type="button" class="tool-btn" id="open-logs-folder">Открыть папку журналов</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- О нас -->
+          <div class="settings-panel" data-settings-panel="about" hidden>
+            <div class="settings-block about-block">
+              <h2 class="settings-title">Чугуй слайды</h2>
+              <p class="about-version">Версия приложения <span id="about-version">…</span></p>
+              <p class="about-build" id="about-build"></p>
+              <p>Церковь Евангельских Христиан Баптистов Т9</p>
+              <p>г. Ростов-на-Дону, улица Труда 9</p>
+              <p>Разработчик: <a href="mailto:DjgaaD@ya.ru">DjgaaD@ya.ru</a></p>
+              <div class="about-update">
+                <button type="button" class="tool-btn" id="check-updates">Проверить обновление</button>
+                <p class="hint" id="about-update-status" hidden></p>
+              </div>
+            </div>
+          </div>
+            </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Редактор песни -->
+    <dialog id="song-editor" class="modal song-editor">
+      <form method="dialog" class="modal-card" id="song-editor-form">
+        <h2 class="modal-title" id="song-editor-title">Новая песня</h2>
+        <div class="editor-meta">
+          <label class="editor-field grow">
+            Название песни
+            <input id="se-title" class="field" type="text" autocomplete="off" />
+          </label>
+          <label class="editor-field number">
+            Номер
+            <input id="se-number" class="field" type="number" min="1" step="1" placeholder="авто" />
+          </label>
+          <label class="editor-field grow">
+            Сборник
+            <select id="se-collection" class="field">
+              <option value="">Не выбрано</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="editor-toolbar">
+          <button type="button" class="tool-btn" id="se-add">Добавить</button>
+          <button type="button" class="tool-btn" id="se-delete">Удалить</button>
+          <button type="button" class="tool-btn" id="se-up">Вверх</button>
+          <button type="button" class="tool-btn" id="se-down">Вниз</button>
+          <button type="button" class="tool-btn" id="se-chorus-after">Припев после куплетов</button>
+          <button type="button" class="tool-btn" id="se-one-line">Текст в одну строку</button>
+        </div>
+
+        <div class="editor-cols">
+          <ul id="se-slide-list" class="editor-slide-list"></ul>
+          <div class="editor-slide-panel">
+            <div class="editor-slide-meta">
+              <label class="editor-field">
+                Тип слайда
+                <select id="se-slide-type" class="field">
+                  <option value="verse">Куплет</option>
+                  <option value="chorus">Припев</option>
+                </select>
+              </label>
+              <label class="editor-field grow">
+                Заголовок
+                <input id="se-slide-heading" class="field" type="text" autocomplete="off" />
+              </label>
+            </div>
+            <label class="editor-field grow editor-text-label">
+              Текст песни
+              <textarea id="se-slide-text" class="field editor-text" rows="12"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="show-btn" id="se-save">Сохранить</button>
+          <button type="button" class="tool-btn ghost-btn" id="se-close" value="cancel">Закрыть</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Создание / изменение сборника -->
+    <dialog id="collection-editor" class="modal">
+      <form method="dialog" class="modal-card compact" id="collection-editor-form">
+        <h2 class="modal-title" id="ce-title">Новый сборник</h2>
+        <label class="editor-field grow">
+          Название сборника
+          <input id="ce-name" class="field" type="text" autocomplete="off" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="show-btn" id="ce-save">Сохранить</button>
+          <button type="button" class="tool-btn ghost-btn" id="ce-close" value="cancel">Закрыть</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Удаление сборника -->
+    <dialog id="collection-delete" class="modal">
+      <div class="modal-card compact" id="cd-card">
+        <div id="cd-step-confirm">
+          <h2 class="modal-title">Удаление сборника</h2>
+          <p class="modal-text" id="cd-confirm-text">Вы точно хотите удалить сборник?</p>
+          <div class="modal-actions">
+            <button type="button" class="show-btn" id="cd-yes">Да</button>
+            <button type="button" class="tool-btn ghost-btn" id="cd-no">Нет</button>
+          </div>
+        </div>
+        <div id="cd-step-songs" hidden>
+          <h2 class="modal-title">Песни в сборнике</h2>
+          <p class="modal-text" id="cd-songs-text">Что сделать с песнями в сборнике?</p>
+          <div class="modal-actions stack-actions">
+            <button type="button" class="show-btn danger-btn" id="cd-delete-songs">Тоже удалить</button>
+            <button type="button" class="show-btn" id="cd-move-songs">Переместить в другой</button>
+            <button type="button" class="tool-btn ghost-btn" id="cd-songs-cancel">Отмена</button>
+          </div>
+        </div>
+        <div id="cd-step-move" hidden>
+          <h2 class="modal-title">Перенос песен</h2>
+          <label class="editor-field grow">
+            В какой сборник перенести
+            <select id="cd-target" class="field"></select>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="show-btn" id="cd-move-confirm">Переместить и удалить</button>
+            <button type="button" class="tool-btn ghost-btn" id="cd-move-cancel">Отмена</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

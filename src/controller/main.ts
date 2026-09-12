@@ -1,0 +1,2176 @@
+import { invoke, listen, open, readTextFile, save } from "../shared/ipc";
+import {
+  fetchJournalInfo,
+  installGlobalLogging,
+  logError,
+  logInfo,
+  logJournalLocation,
+  openJournalFolder,
+} from "../shared/logger";
+import {
+  ALargeSmall,
+  ArrowUpDown,
+  Book,
+  BookOpenText,
+  createIcons,
+  Folder,
+  Hash,
+  LayoutDashboard,
+  List,
+  Megaphone,
+  Music,
+  PenLine,
+  Pencil,
+  Plus,
+  Radio,
+  RotateCcw,
+  Save,
+  Settings,
+  Trash2,
+  Upload,
+  Zap,
+} from "lucide";
+import {
+  type MonitorInfo,
+  type TextMode,
+} from "../shared/events";
+import { applyPreviewAspect, previewClear, previewSetText } from "./preview-frame";
+import {
+  addSongToQuickPlaylist,
+  bindBroadcast,
+  hotkeyEndShow,
+  isSongInQuickPlaylist,
+  openSongInBroadcast,
+  openTextInBroadcast,
+  refreshBroadcastPreviewAspect,
+  startBroadcastShow,
+  stepSlides,
+  isBroadcastLive,
+} from "./broadcast";
+import {
+  closeDisplayWindow,
+  ensureDisplayReady,
+  setDisplayMonitorIndex,
+} from "./display-bridge";
+import {
+  bindCollectionEditor,
+  bindSongEditor,
+  openCollectionDeleteDialog,
+  openCollectionEditor,
+  openSongEditor,
+  type Collection,
+} from "./song-editor";
+import {
+  bindStylesUi,
+  bootStyles,
+  refreshActiveStylePreviews,
+} from "./styles";
+import { cleanSongLines } from "../shared/style";
+import { bindHotkeysUi, bootHotkeys, registerHotkeys } from "./hotkeys";
+
+type SongHit = { id: number; number: number; title: string };
+type SongDetail = {
+  id: number;
+  title: string;
+  slides: string[];
+  collection_id?: number | null;
+};
+type Verse = { book: string; chapter: number; verse: number; text: string };
+type Announcement = { id: string; title: string; text: string };
+type PendingSlide = {
+  title?: string;
+  lines: string[];
+  mode: TextMode;
+  songId?: number;
+  slideIndex?: number;
+  /** Bible reference ("Ин 3:16") — отдельно от текста стиха. */
+  verseRef?: string;
+};
+
+const STORAGE = {
+  theme: "chyguislide.theme",
+  confirmClose: "chyguislide.confirmClose",
+  shows: "chyguislide.shows",
+  announcements: "chyguislide.announcements",
+  monitor: "chyguislide.displayMonitor",
+  persistentDisplay: "chyguislide.persistentDisplay",
+};
+
+const OT_COUNT = 39;
+
+let selectedSong: SongDetail | null = null;
+let selectedSlideIndex = -1;
+let pending: PendingSlide | null = null;
+let books: string[] = [];
+let selectedBook = "";
+let selectedChapter = 1;
+let chapterVerses: Verse[] = [];
+let selectedBibleVerseIndex = 0;
+let bibleSearchResults: Verse[] = [];
+let bibleSearchIndex = -1;
+let bibleSearchRequestId = 0;
+let announcements: Announcement[] = [];
+let selectedAnnId = "";
+let selectedAnnSlide = 0;
+let monitors: MonitorInfo[] = [];
+let selectedMonitorIndex: number | null = null;
+let previewAspect = { width: 16, height: 9 };
+let songSort: "title" | "id" = "title";
+let songsRequestId = 0;
+let collections: Collection[] = [];
+let preferredCollectionId: number | null = null;
+
+function $(sel: string): HTMLElement {
+  const el = document.querySelector<HTMLElement>(sel);
+  if (!el) {
+    throw new Error(`Missing ${sel}`);
+  }
+  return el;
+}
+
+function input(sel: string): HTMLInputElement {
+  return $(sel) as HTMLInputElement;
+}
+
+function select(sel: string): HTMLSelectElement {
+  return $(sel) as HTMLSelectElement;
+}
+
+function songsPreviewFrame(): HTMLIFrameElement {
+  return $("#songs-preview-frame") as HTMLIFrameElement;
+}
+
+function annPreviewFrame(): HTMLIFrameElement {
+  return $("#ann-preview-frame") as HTMLIFrameElement;
+}
+
+function biblePreviewFrame(): HTMLIFrameElement {
+  return $("#bible-preview-frame") as HTMLIFrameElement;
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key: string, value: unknown) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function showCounts(): Record<string, number> {
+  return loadJson<Record<string, number>>(STORAGE.shows, {});
+}
+
+function bumpShow(songId?: number) {
+  if (songId == null) {
+    return;
+  }
+  const counts = showCounts();
+  counts[String(songId)] = (counts[String(songId)] || 0) + 1;
+  saveJson(STORAGE.shows, counts);
+}
+
+function bookGroup(index: number): string {
+  if (index < 5) return "g0";
+  if (index < 17) return "g1";
+  if (index < 22) return "g2";
+  if (index < 39) return "g3";
+  if (index < 43) return "g4";
+  if (index < 44) return "g5";
+  if (index < 57) return "g6";
+  return "g7";
+}
+
+function parseAnnSlides(text: string): string[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function slideLabel(text: string, index: number): string {
+  const first = text.split("\n")[0]?.trim() || "";
+  if (/^куплет/i.test(first) || /^припев/i.test(first)) {
+    return first;
+  }
+  return `Слайд ${index + 1}`;
+}
+
+function setBiblePreview(payload: PendingSlide | null) {
+  pending = payload;
+  const frame = biblePreviewFrame();
+  const idle = document.getElementById("bible-preview-idle");
+  const showBtn = document.getElementById("bible-show") as HTMLButtonElement | null;
+  if (!payload || payload.lines.length === 0) {
+    previewClear(frame);
+    idle?.removeAttribute("hidden");
+    if (showBtn) {
+      showBtn.disabled = true;
+    }
+    return;
+  }
+  idle?.setAttribute("hidden", "");
+  if (showBtn) {
+    showBtn.disabled = false;
+  }
+  // На экран — только текст стиха; ссылка (verseRef) рисуется по настройкам стиля.
+  previewSetText(frame, { lines: payload.lines, mode: payload.mode });
+  refreshActiveStylePreviews();
+}
+
+function pickBibleVerse(index: number) {
+  const verse = chapterVerses[index];
+  if (!verse) {
+    return;
+  }
+  selectedBibleVerseIndex = index;
+  // На экран уходит только текст стиха; ссылка — отдельно (verseRef),
+  // чтобы display.html мог показать её по настройкам стиля.
+  setBiblePreview({
+    lines: [verse.text],
+    mode: "bible",
+    verseRef: `${verse.book} ${verse.chapter}:${verse.verse}`,
+  });
+  document.querySelectorAll("#bible-verses li").forEach((node) => {
+    node.classList.toggle("selected", (node as HTMLElement).dataset.key === String(index));
+  });
+  requestAnimationFrame(updateBibleVerseStripe);
+}
+
+function updateBibleVerseStripe() {
+  const host = document.getElementById("bible-verse-host");
+  const stripe = document.getElementById("bible-verse-stripe");
+  const selected = document.querySelector<HTMLElement>(
+    "#bible-verses .slide-item.selected",
+  );
+  if (!host || !stripe) {
+    return;
+  }
+  if (!selected) {
+    stripe.style.opacity = "0";
+    return;
+  }
+  stripe.style.opacity = "1";
+  const hostTop = host.getBoundingClientRect().top;
+  const itemTop = selected.getBoundingClientRect().top;
+  const offset =
+    itemTop - hostTop + host.scrollTop + (selected.offsetHeight - 40) / 2;
+  stripe.style.top = `${Math.max(0, offset)}px`;
+}
+
+async function ensureDisplayWindow() {
+  setDisplayMonitorIndex(selectedMonitorIndex);
+  await ensureDisplayReady();
+}
+
+function isSelectedMonitorPrimary(): boolean {
+  if (selectedMonitorIndex == null) {
+    return true;
+  }
+  const monitor = monitors.find((m) => m.index === selectedMonitorIndex);
+  return monitor?.isPrimary ?? true;
+}
+
+function persistentDisplayEnabled(): boolean {
+  return localStorage.getItem(STORAGE.persistentDisplay) === "1";
+}
+
+function setPersistentDisplayEnabled(on: boolean) {
+  localStorage.setItem(STORAGE.persistentDisplay, on ? "1" : "0");
+}
+
+function syncPersistentDisplayUi() {
+  const checkbox = document.getElementById("persistent-display") as HTMLInputElement | null;
+  const hint = document.getElementById("persistent-display-hint");
+  if (!checkbox) {
+    return;
+  }
+  const primary = isSelectedMonitorPrimary();
+  checkbox.disabled = primary;
+  if (primary) {
+    checkbox.checked = false;
+    setPersistentDisplayEnabled(false);
+    if (hint) {
+      hint.textContent =
+        "Опция недоступна: выбран основной монитор. Укажите внешний экран, чтобы не перекрыть панель управления.";
+    }
+  } else {
+    checkbox.checked = persistentDisplayEnabled();
+    if (hint) {
+      hint.textContent =
+        "Окно Display остаётся на втором экране постоянно. Откроется также при любом показе слайда.";
+    }
+  }
+}
+
+function applyTheme(theme: "system" | "dark" | "light") {
+  const resolved = theme === "system"
+    ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+    : theme;
+  document.documentElement.dataset.theme = resolved;
+  localStorage.setItem(STORAGE.theme, theme);
+  const label = resolved === "dark" ? "Светлая тема" : "Тёмная тема";
+  const toggle = document.getElementById("theme-toggle");
+  if (toggle) {
+    toggle.textContent = label;
+  }
+}
+
+function placeNavStripe() {
+  const active = document.querySelector<HTMLElement>(".nav-item.active");
+  const stripe = document.getElementById("nav-stripe");
+  const nav = document.getElementById("nav");
+  if (!active || !stripe || !nav) {
+    return;
+  }
+  const a = active.getBoundingClientRect();
+  const n = nav.getBoundingClientRect();
+  const w = 40;
+  stripe.style.width = `${w}px`;
+  stripe.style.transform = `translateX(${a.left - n.left + (a.width - w) / 2}px)`;
+}
+
+function switchTab(name: string) {
+  logInfo("nav", `вкладка: ${name}`);
+  document.querySelectorAll(".nav-item").forEach((tab) => {
+    tab.classList.toggle("active", (tab as HTMLElement).dataset.tab === name);
+  });
+  document.querySelectorAll(".view").forEach((view) => {
+    view.classList.toggle("active", (view as HTMLElement).dataset.view === name);
+  });
+  requestAnimationFrame(placeNavStripe);
+}
+
+function setSongsPreview(payload: PendingSlide | null) {
+  pending = payload;
+  const frame = songsPreviewFrame();
+  const idle = document.getElementById("songs-preview-idle");
+  const showBtn = document.getElementById("songs-start-show") as HTMLButtonElement | null;
+  if (!payload) {
+    previewClear(frame);
+    idle?.removeAttribute("hidden");
+    if (showBtn) {
+      showBtn.disabled = true;
+    }
+    return;
+  }
+  idle?.setAttribute("hidden", "");
+  if (showBtn) {
+    showBtn.disabled = false;
+  }
+  // В превью только текст слайда — жёсткая фильтрация (как на экране).
+  previewSetText(frame, {
+    lines: cleanSongLines(payload.lines, payload.title),
+    mode: payload.mode,
+  });
+  // Гарантируем, что активный стиль (фон, шрифт) не потеряется при выборе.
+  refreshActiveStylePreviews();
+}
+
+function setAnnPreview(payload: PendingSlide | null) {
+  pending = payload;
+  const frame = annPreviewFrame();
+  const idle = document.getElementById("ann-preview-idle");
+  const showBtn = document.getElementById("ann-show") as HTMLButtonElement | null;
+  if (!payload || payload.lines.length === 0) {
+    previewClear(frame);
+    idle?.removeAttribute("hidden");
+    if (showBtn) {
+      showBtn.disabled = true;
+    }
+    return;
+  }
+  idle?.setAttribute("hidden", "");
+  if (showBtn) {
+    showBtn.disabled = false;
+  }
+  // В превью только текст объявления — заголовок остаётся в интерфейсе.
+  previewSetText(frame, { lines: payload.lines, mode: payload.mode });
+  refreshActiveStylePreviews();
+}
+
+function updateSlideStripe() {
+  const host = document.getElementById("slide-host");
+  const stripe = document.getElementById("slide-stripe");
+  const selected = document.querySelector<HTMLElement>("#slide-list .slide-item.selected");
+  if (!host || !stripe) {
+    return;
+  }
+  if (!selected) {
+    stripe.style.opacity = "0";
+    return;
+  }
+  stripe.style.opacity = "1";
+  const hostTop = host.getBoundingClientRect().top;
+  const itemTop = selected.getBoundingClientRect().top;
+  const offset =
+    itemTop - hostTop + host.scrollTop + (selected.offsetHeight - 40) / 2;
+  stripe.style.top = `${Math.max(0, offset)}px`;
+}
+
+function fillList(
+  root: HTMLElement,
+  items: { key: string; html: string; title?: string; className?: string }[],
+  onPick: (key: string) => void,
+  activeKey?: string,
+  activeClass = "active",
+) {
+  root.replaceChildren();
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.dataset.key = item.key;
+    if (item.className) {
+      li.className = item.className;
+    }
+    li.innerHTML = item.html;
+    if (item.title) {
+      li.title = item.title;
+    }
+    if (item.key === activeKey) {
+      li.classList.add(activeClass);
+    }
+    li.addEventListener("click", () => onPick(item.key));
+    root.appendChild(li);
+  }
+}
+
+function closeMenus() {
+  document.querySelectorAll(".menu-panel").forEach((panel) => {
+    (panel as HTMLElement).hidden = true;
+  });
+}
+
+function refreshIcons() {
+  createIcons({
+    icons: {
+      BookOpenText,
+      LayoutDashboard,
+      Music,
+      Book,
+      Radio,
+      Megaphone,
+      Settings,
+      ArrowUpDown,
+      ALargeSmall,
+      Hash,
+      Plus,
+      Folder,
+      List,
+      PenLine,
+      Pencil,
+      Trash2,
+      Save,
+      RotateCcw,
+      Upload,
+      Zap,
+    },
+  });
+}
+
+async function resolvePreviewAspect() {
+  monitors = await invoke<MonitorInfo[]>("list_monitors");
+  const stored = localStorage.getItem(STORAGE.monitor);
+  const storedIndex = stored != null ? Number(stored) : NaN;
+
+  let target =
+    monitors.find((m) => m.index === storedIndex) ||
+    monitors.find((m) => !m.isPrimary) ||
+    monitors[0];
+
+  if (target) {
+    selectedMonitorIndex = target.index;
+    previewAspect = { width: target.width, height: target.height };
+  } else {
+    selectedMonitorIndex = null;
+    previewAspect = { width: 16, height: 9 };
+  }
+
+  applyPreviewAspect(songsPreviewFrame(), previewAspect.width, previewAspect.height);
+  applyPreviewAspect(annPreviewFrame(), previewAspect.width, previewAspect.height);
+  applyPreviewAspect(biblePreviewFrame(), previewAspect.width, previewAspect.height);
+  refreshBroadcastPreviewAspect(previewAspect.width, previewAspect.height);
+}
+
+async function loadMonitorsSettings() {
+  await resolvePreviewAspect();
+  const list = $("#monitor-list");
+  list.replaceChildren();
+
+  if (monitors.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "Мониторы не найдены. Превью: 16:9.";
+    list.appendChild(empty);
+    syncPersistentDisplayUi();
+    return;
+  }
+
+  for (const monitor of monitors) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `monitor-card${monitor.index === selectedMonitorIndex ? " active" : ""}`;
+    card.innerHTML = `
+      <div>
+        <strong>${monitor.name}${monitor.isPrimary ? " (основной)" : ""}</strong>
+        <div class="meta">${monitor.width}×${monitor.height} · scale ${monitor.scaleFactor.toFixed(2)} · pos ${monitor.x},${monitor.y}</div>
+      </div>
+      <span>${monitor.index === selectedMonitorIndex ? "выбран" : "выбрать"}</span>
+    `;
+    card.addEventListener("click", async () => {
+      selectedMonitorIndex = monitor.index;
+      setDisplayMonitorIndex(monitor.index);
+      localStorage.setItem(STORAGE.monitor, String(monitor.index));
+      previewAspect = { width: monitor.width, height: monitor.height };
+      applyPreviewAspect(songsPreviewFrame(), monitor.width, monitor.height);
+      applyPreviewAspect(annPreviewFrame(), monitor.width, monitor.height);
+      applyPreviewAspect(biblePreviewFrame(), monitor.width, monitor.height);
+      await invoke("set_display_monitor", { index: monitor.index }).catch(() => undefined);
+      if (monitor.isPrimary) {
+        setPersistentDisplayEnabled(false);
+        await closeDisplayWindow();
+        refreshActiveStylePreviews();
+      } else if (persistentDisplayEnabled()) {
+        await ensureDisplayWindow();
+        refreshActiveStylePreviews();
+      }
+      await loadMonitorsSettings();
+    });
+    list.appendChild(card);
+  }
+  syncPersistentDisplayUi();
+}
+
+async function loadCollections(selectId?: number | null) {
+  try {
+    const rows = await invoke<Array<{ id: number; title?: string; name?: string }>>(
+      "list_collections",
+    );
+    collections = (Array.isArray(rows) ? rows : []).map((row) => ({
+      id: Number(row.id),
+      title: String(row.title ?? row.name ?? "").trim() || `Сборник ${row.id}`,
+    }));
+  } catch (error) {
+    console.error("loadCollections failed", error);
+    window.alert(`Не удалось загрузить сборники: ${error}`);
+    collections = [];
+  }
+
+  const songSel = select("#song-collection");
+  const overviewSel = select("#overview-collection");
+  const keepSong = selectId != null ? String(selectId) : songSel.value || "all";
+  const keepOverview = overviewSel.value || "all";
+
+  const fill = (sel: HTMLSelectElement, keep: string) => {
+    const options = [
+      `<option value="all">Все песни</option>`,
+      ...collections.map(
+        (c) =>
+          `<option value="${c.id}">${escapeHtml(c.title)}</option>`,
+      ),
+    ];
+    sel.innerHTML = options.join("");
+    if ([...sel.options].some((o) => o.value === keep)) {
+      sel.value = keep;
+    } else if (collections.length === 1) {
+      sel.value = String(collections[0].id);
+    } else {
+      sel.value = "all";
+    }
+  };
+
+  fill(songSel, keepSong);
+  fill(overviewSel, keepOverview);
+
+  if (songSel.value !== "all") {
+    preferredCollectionId = Number(songSel.value);
+  } else if (collections[0]) {
+    preferredCollectionId = collections[0].id;
+  } else {
+    preferredCollectionId = null;
+  }
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function selectedCollectionFilter(): number | null {
+  const value = select("#song-collection").value;
+  if (!value || value === "all") {
+    return null;
+  }
+  const id = Number(value);
+  return Number.isFinite(id) ? id : null;
+}
+
+async function loadSongs() {
+  const list = $("#song-list");
+  const requestId = ++songsRequestId;
+  list.innerHTML = `<li class="list-status">Загрузка…</li>`;
+
+  try {
+    const hits = await invoke<SongHit[]>("search_songs", {
+      query: input("#song-query").value,
+      sort: songSort,
+      collectionId: selectedCollectionFilter(),
+    });
+    if (requestId !== songsRequestId) {
+      return;
+    }
+    if (hits.length === 0) {
+      list.innerHTML = `<li class="list-status">Ничего не найдено</li>`;
+      return;
+    }
+    fillList(
+      list,
+      hits.map((hit) => ({
+        key: String(hit.id),
+        className: "song-item",
+        html: `<span class="song-num">${hit.number}</span><span class="song-title-text">${hit.title}</span>`,
+        title: hit.title,
+      })),
+      async (key) => {
+        await openSong(Number(key));
+      },
+      selectedSong ? String(selectedSong.id) : undefined,
+      "selected",
+    );
+  } catch (error) {
+    if (requestId !== songsRequestId) {
+      return;
+    }
+    console.error("loadSongs failed", error);
+    list.innerHTML = `<li class="list-status">Ошибка загрузки списка</li>`;
+  }
+}
+
+async function backupDatabase() {
+  const destination = await save({
+    defaultPath: "chyguislide-backup.sqlite",
+    filters: [{ name: "SQLite database", extensions: ["sqlite", "db"] }],
+  });
+  if (!destination) {
+    return;
+  }
+  try {
+    await invoke("backup_database", { destinationPath: destination });
+    window.alert("Backup created successfully.");
+  } catch (error) {
+    console.error("Database backup failed", error);
+    window.alert(`Backup failed: ${String(error)}`);
+  }
+}
+
+async function restoreDatabase() {
+  const source = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "SQLite database", extensions: ["sqlite", "db", "bak"] }],
+  });
+  if (!source || Array.isArray(source)) {
+    return;
+  }
+  if (!window.confirm("Restore this database backup? Current data will be replaced.")) {
+    return;
+  }
+  try {
+    await invoke("restore_database", { sourcePath: source });
+    await loadCollections();
+    await loadSongs();
+    await loadBooks();
+    window.alert("Database restored successfully.");
+  } catch (error) {
+    console.error("Database restore failed", error);
+    window.alert(`Restore failed: ${String(error)}`);
+  }
+}
+
+/** Обновляет подсказку с путём к каталогу журналов во вкладке «Журнал». */
+async function refreshLogsHint() {
+  const hint = document.getElementById("logs-dir-hint");
+  if (!hint) {
+    return;
+  }
+  const info = await fetchJournalInfo();
+  hint.textContent = info
+    ? `Каталог журналов: ${info.dir} (файлов: ${info.files.length} из ${info.maxFiles})`
+    : "Каталог журналов: недоступен";
+}
+
+async function importLegacyChorusJson() {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Chorus JSON", extensions: ["json"] }],
+  });
+  if (!selected || Array.isArray(selected)) {
+    return;
+  }
+  try {
+    const rawJson = await readTextFile(selected);
+    const result = await invoke<{ importedSongs: number; importedSections: number }>(
+      "import_legacy_chorus_json",
+      { rawJson },
+    );
+    await loadCollections();
+    await loadSongs();
+    window.alert(`Импортировано песен: ${result.importedSongs}. Разделов: ${result.importedSections}.`);
+  } catch (error) {
+    console.error("Legacy chorus JSON import failed", error);
+    window.alert(`Ошибка импорта: ${String(error)}`);
+  }
+}
+
+async function openSong(id: number) {
+  selectedSong = await invoke<SongDetail | null>("get_song", { id });
+  selectedSlideIndex = -1;
+  pending = null;
+  setSongsPreview(null);
+
+  const empty = $("#songs-empty");
+  const detail = $("#songs-detail");
+
+  document.querySelectorAll("#song-list .song-item").forEach((node) => {
+    node.classList.toggle(
+      "selected",
+      (node as HTMLElement).dataset.key === String(id),
+    );
+  });
+
+  if (!selectedSong) {
+    empty.hidden = false;
+    detail.hidden = true;
+    $("#song-title").textContent = "";
+    $("#slide-list").replaceChildren();
+    updateSlideStripe();
+    return;
+  }
+
+  empty.hidden = true;
+  detail.hidden = false;
+  $("#song-title").textContent = selectedSong.title;
+  // Как в макете: сразу выбираем первый слайд.
+  selectedSlideIndex = 0;
+  renderSongSlides();
+  pickSongSlide(0);
+  updateSongToPlaylistButton();
+}
+
+function pickSongSlide(index: number) {
+  if (!selectedSong || index < 0 || index >= selectedSong.slides.length) {
+    return;
+  }
+  selectedSlideIndex = index;
+  const slide = selectedSong.slides[index];
+  const lines = slide.split("\n").filter((line) => line.length > 0);
+  setSongsPreview({
+    title: selectedSong.title,
+    lines,
+    mode: "song",
+    songId: selectedSong.id,
+    slideIndex: index,
+  });
+  document.querySelectorAll("#slide-list .slide-item").forEach((node) => {
+    node.classList.toggle(
+      "selected",
+      (node as HTMLElement).dataset.key === String(index),
+    );
+  });
+  requestAnimationFrame(updateSlideStripe);
+}
+
+function renderSongSlides() {
+  if (!selectedSong) {
+    return;
+  }
+  fillList(
+    $("#slide-list"),
+    selectedSong.slides.map((slide, index) => {
+      const label = slideLabel(slide, index);
+      const body = slide.startsWith(label) ? slide.slice(label.length).trim() : slide;
+      return {
+        key: String(index),
+        className: "slide-item",
+        html: `<div class="slide-label">${label}</div><div class="slide-text">${body || slide}</div>`,
+      };
+    }),
+    (key) => {
+      pickSongSlide(Number(key));
+    },
+    selectedSlideIndex >= 0 ? String(selectedSlideIndex) : undefined,
+    "selected",
+  );
+  requestAnimationFrame(updateSlideStripe);
+}
+
+/** Состояние кнопки «В плейлист»: если песня уже в быстром плейлисте — «В плейлисте» и отключена. */
+function updateSongToPlaylistButton() {
+  const btn = document.getElementById("song-to-playlist") as HTMLButtonElement | null;
+  if (!btn) {
+    return;
+  }
+  const inPlaylist = selectedSong ? isSongInQuickPlaylist(selectedSong.id) : false;
+  btn.classList.toggle("in-playlist", inPlaylist);
+  btn.title = inPlaylist ? "Уже в быстром плейлисте" : "Добавить в быстрый плейлист";
+  btn.innerHTML = `<i data-lucide="list"></i>${inPlaylist ? "В плейлисте" : "В плейлист"}`;
+  btn.disabled = inPlaylist;
+  refreshIcons();
+}
+
+async function startSongShow() {
+  if (!pending || pending.mode !== "song" || !selectedSong) {
+    return;
+  }
+  await openSongInBroadcast(selectedSong.id, true, pending.slideIndex ?? 0);
+  switchTab("broadcast");
+}
+
+/** Горячая клавиша «Начать показ»: запускает показ активного раздела. */
+async function startShowForActiveView(): Promise<void> {
+  const view = document.querySelector<HTMLElement>(".view.active")?.dataset.view ?? "";
+  if (view === "songs") {
+    await startSongShow();
+    return;
+  }
+  if (view === "bible") {
+    await startBibleVerseShow();
+    return;
+  }
+  if (view === "announcements") {
+    await startAnnouncementShow();
+    return;
+  }
+  // Трансляция (и любой другой раздел) — старт показа плейлиста.
+  await startBroadcastShow();
+}
+
+/**
+ * Единая логика показа объявления: добавление в «Быстрый плейлист»
+ * Трансляции, старт вывода и авто-переключение интерфейса на «Трансляцию».
+ */
+async function startAnnouncementShow(): Promise<boolean> {
+  const item = selectedAnnouncement();
+  if (!item) {
+    return false;
+  }
+  const slides = parseAnnSlides(item.text);
+  if (slides.length === 0) {
+    window.alert("Объявление пусто — добавьте текст слайдов.");
+    return false;
+  }
+  const ok = await openTextInBroadcast(
+    {
+      title: item.title,
+      slides,
+      mode: "announcement",
+    },
+    true,
+    Math.min(selectedAnnSlide, Math.max(0, slides.length - 1)),
+  );
+  if (ok) {
+    switchTab("broadcast");
+  }
+  return ok;
+}
+
+/** Единая логика показа стиха Библии: в быстрый плейлист уходит ВСЯ глава,
+ *  стартовый слайд — выбранный стих, чтобы «Следующий» показывал следующие стихи. */
+async function startBibleVerseShow(): Promise<boolean> {
+  if (!pending || pending.mode !== "bible") {
+    return false;
+  }
+  const verses = chapterVerses.filter((v) => v.text.trim().length > 0);
+  if (verses.length === 0) {
+    return false;
+  }
+  const slides = verses.map((v) => v.text);
+  const verseRefs = verses.map((v) => `${v.book} ${v.chapter}:${v.verse}`);
+  const startIdx = Math.min(Math.max(0, selectedBibleVerseIndex), slides.length - 1);
+  const ok = await openTextInBroadcast(
+    {
+      title: `${selectedBook} · Глава ${selectedChapter}`,
+      slides,
+      mode: "bible",
+      verseRef: verseRefs[0],
+      verseRefs,
+    },
+    true,
+    startIdx,
+  );
+  if (ok) {
+    switchTab("broadcast");
+  }
+  return ok;
+}
+
+async function loadOverview() {
+  const top = Number(select("#overview-top").value) || 20;
+  const overviewValue = select("#overview-collection").value;
+  const collectionId =
+    overviewValue && overviewValue !== "all" ? Number(overviewValue) : null;
+  const hits = await invoke<SongHit[]>("search_songs", {
+    query: "",
+    sort: "title",
+    collectionId: Number.isFinite(collectionId as number) ? collectionId : null,
+  });
+  const counts = showCounts();
+  const ranked = hits
+    .map((hit) => ({
+      ...hit,
+      shows: counts[String(hit.id)] || 0,
+    }))
+    .sort((a, b) => b.shows - a.shows || a.title.localeCompare(b.title, "ru"))
+    .slice(0, top);
+
+  const body = $("#overview-body");
+  body.replaceChildren();
+  ranked.forEach((hit, index) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${index + 1}</td><td>${hit.id}</td><td>${hit.title}</td><td>${hit.shows}</td>`;
+    tr.addEventListener("click", async () => {
+      switchTab("songs");
+      await openSong(hit.id);
+    });
+    body.appendChild(tr);
+  });
+}
+
+async function onSongSaved(song: SongDetail) {
+  preferredCollectionId = song.collection_id ?? preferredCollectionId;
+  if (song.collection_id != null) {
+    select("#song-collection").value = String(song.collection_id);
+  }
+  await loadSongs();
+  await openSong(song.id);
+  await loadOverview();
+}
+
+function clearSongSelection() {
+  selectedSong = null;
+  selectedSlideIndex = -1;
+  pending = null;
+  setSongsPreview(null);
+  $("#songs-empty").hidden = false;
+  $("#songs-detail").hidden = true;
+  $("#song-title").textContent = "";
+  $("#slide-list").replaceChildren();
+  updateSlideStripe();
+}
+
+async function deleteSelectedSong() {
+  if (!selectedSong) {
+    window.alert("Сначала выберите песню.");
+    return;
+  }
+  const ok = window.confirm(
+    `Вы точно хотите удалить песню «${selectedSong.title}» (№ ${selectedSong.id})?\n\nДа — удалить, Нет — отмена.`,
+  );
+  if (!ok) {
+    return;
+  }
+  const id = selectedSong.id;
+  try {
+    await invoke("delete_song", { id });
+  } catch (error) {
+    window.alert(String(error));
+    return;
+  }
+  clearSongSelection();
+  await loadSongs();
+  await loadOverview();
+}
+
+function currentCollectionFromFilter(): Collection | null {
+  const id = selectedCollectionFilter();
+  if (id == null) {
+    return null;
+  }
+  return collections.find((c) => c.id === id) || null;
+}
+
+async function onCollectionSaved(saved: Collection) {
+  const title =
+    saved.title ||
+    String((saved as { name?: string }).name || "").trim() ||
+    `Сборник ${saved.id}`;
+  const normalized = { id: saved.id, title };
+  const idx = collections.findIndex((c) => c.id === normalized.id);
+  if (idx >= 0) {
+    collections[idx] = normalized;
+  } else {
+    collections.push(normalized);
+  }
+  await loadCollections(normalized.id);
+  select("#song-collection").value = String(normalized.id);
+  preferredCollectionId = normalized.id;
+  await loadSongs();
+  await loadOverview();
+}
+
+async function onCollectionDeleted() {
+  clearSongSelection();
+  await loadCollections();
+  await loadSongs();
+  await loadOverview();
+}
+
+async function loadBooks() {
+  books = await invoke<string[]>("list_bible_books");
+  renderBooks();
+}
+
+function showBibleSearchResult(verse: Verse) {
+  // Make a global search result the active Bible selection so F5 can present it.
+  selectedBook = verse.book;
+  selectedChapter = verse.chapter;
+  selectedBibleVerseIndex = 0;
+  chapterVerses = [verse];
+  setBiblePreview({
+    lines: [verse.text],
+    mode: "bible",
+    verseRef: `${verse.book} ${verse.chapter}:${verse.verse}`,
+  });
+}
+
+async function showBibleSearchResultOnScreen(verse: Verse) {
+  await openTextInBroadcast(
+    {
+      title: `${verse.book} ${verse.chapter}:${verse.verse}`,
+      slides: [verse.text],
+      mode: "bible",
+      verseRef: `${verse.book} ${verse.chapter}:${verse.verse}`,
+      verseRefs: [`${verse.book} ${verse.chapter}:${verse.verse}`],
+    },
+    true,
+    0,
+  );
+  switchTab("broadcast");
+}
+
+async function searchBibleQuery() {
+  const query = input("#bible-search-query").value.trim();
+  const requestId = ++bibleSearchRequestId;
+  if (!query) {
+    bibleSearchResults = [];
+    bibleSearchIndex = -1;
+    if (selectedBook) {
+      await selectChapter(selectedChapter);
+    }
+    return;
+  }
+  bibleSearchResults = await invoke<Verse[]>("search_bible_query", { query });
+  if (requestId !== bibleSearchRequestId) {
+    return;
+  }
+  bibleSearchIndex = bibleSearchResults.length > 0 ? 0 : -1;
+  const chapters = $("#bible-chapters");
+  chapters.replaceChildren();
+  chapters.hidden = true;
+  fillList(
+    $("#bible-verses"),
+    bibleSearchResults.map((verse, index) => ({
+      key: String(index),
+      className: "slide-item",
+      html: `<div class="slide-label">${verse.book} ${verse.chapter}:${verse.verse}</div><div class="slide-text">${verse.text}</div>`,
+    })),
+    (key) => {
+      bibleSearchIndex = Number(key);
+      const verse = bibleSearchResults[bibleSearchIndex];
+      if (verse) showBibleSearchResult(verse);
+    },
+    bibleSearchIndex >= 0 ? String(bibleSearchIndex) : undefined,
+    "selected",
+  );
+  const first = bibleSearchResults[0];
+  if (first) showBibleSearchResult(first);
+}
+
+function renderBooks() {
+  const panel = $("#bible-books");
+  panel.replaceChildren();
+
+  const groups = [
+    { title: "Ветхий Завет", items: books.slice(0, OT_COUNT) },
+    { title: "Новый Завет", items: books.slice(OT_COUNT) },
+  ];
+
+  groups.forEach((group, groupOffset) => {
+    const title = document.createElement("div");
+    title.className = "book-group-title";
+    title.textContent = group.title;
+    panel.appendChild(title);
+    const grid = document.createElement("div");
+    grid.className = "book-grid";
+    group.items.forEach((book, localIndex) => {
+      const index = groupOffset === 0 ? localIndex : OT_COUNT + localIndex;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `book-chip ${bookGroup(index)}${book === selectedBook ? " active" : ""}`;
+      btn.textContent = book;
+      btn.addEventListener("click", () => {
+        void selectBook(book);
+      });
+      grid.appendChild(btn);
+    });
+    panel.appendChild(grid);
+  });
+}
+
+async function selectBook(book: string) {
+  selectedBook = book;
+  selectedChapter = 1;
+  renderBooks();
+  $("#bible-heading").textContent = book;
+  const count = await invoke<number>("bible_chapter_count", { book });
+  const chapters = $("#bible-chapters");
+  chapters.replaceChildren();
+  for (let i = 1; i <= count; i++) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chapter-chip${i === selectedChapter ? " active" : ""}`;
+    btn.textContent = String(i);
+    btn.addEventListener("click", () => {
+      void selectChapter(i);
+    });
+    chapters.appendChild(btn);
+  }
+  await selectChapter(1);
+}
+
+async function selectChapter(chapter: number) {
+  selectedChapter = chapter;
+  $("#bible-chapters").hidden = false;
+  document.querySelectorAll("#bible-chapters .chapter-chip").forEach((node) => {
+    node.classList.toggle("active", node.textContent === String(chapter));
+  });
+  $("#bible-heading").textContent = selectedBook;
+  $("#bible-chapter-sub").textContent = `Глава ${chapter}`;
+  chapterVerses = await invoke<Verse[]>("get_bible_chapter", {
+    book: selectedBook,
+    chapter,
+  });
+  fillList(
+    $("#bible-verses"),
+    chapterVerses.map((verse, index) => ({
+      key: String(index),
+      className: "slide-item",
+      html: `<div class="slide-label">Стих ${verse.verse}</div><div class="slide-text">${verse.text}</div>`,
+    })),
+    (key) => {
+      pickBibleVerse(Number(key));
+    },
+  );
+  setBiblePreview(null);
+}
+
+function loadAnnouncements() {
+  announcements = loadJson<Announcement[]>(STORAGE.announcements, [
+    {
+      id: "phones",
+      title: "Телефоны",
+      text: "Братья и сёстры, пожалуйста, выключите звук на своих телефонах!!!",
+    },
+    {
+      id: "prayer",
+      title: "Молитва",
+      text: "Сейчас время молитвы. Просим сохранять тишину.",
+    },
+  ]);
+  renderAnnouncements();
+}
+
+function renderAnnouncements() {
+  const q = input("#ann-query").value.trim().toLowerCase();
+  const filtered = announcements.filter((item) => item.title.toLowerCase().includes(q));
+  if (filtered.length === 0) {
+    fillList(
+      $("#ann-list"),
+      [{ key: "-", className: "list-status", html: "Ничего не найдено" }],
+      () => undefined,
+    );
+  } else {
+    fillList(
+      $("#ann-list"),
+      filtered.map((item) => ({
+        key: item.id,
+        className: "song-item",
+        html: `<span class="song-title-text">${item.title}</span>`,
+        title: item.title,
+      })),
+      (key) => selectAnnouncement(key),
+      selectedAnnId,
+      "selected",
+    );
+  }
+  if (!selectedAnnId && filtered[0]) {
+    selectAnnouncement(filtered[0].id);
+  }
+}
+
+function selectedAnnouncement(): Announcement | null {
+  return announcements.find((a) => a.id === selectedAnnId) ?? null;
+}
+
+function currentAnnSlides(): string[] {
+  const item = selectedAnnouncement();
+  return item ? parseAnnSlides(item.text) : [];
+}
+
+function selectAnnouncement(id: string) {
+  selectedAnnId = id;
+  selectedAnnSlide = 0;
+  const item = announcements.find((a) => a.id === id);
+  document.querySelectorAll("#ann-list li").forEach((node) => {
+    node.classList.toggle("selected", (node as HTMLElement).dataset.key === id);
+  });
+  if (!item) {
+    $("#ann-empty").hidden = false;
+    $("#ann-detail").hidden = true;
+    $("#ann-heading").textContent = "";
+    $("#ann-slide-list").replaceChildren();
+    updateAnnSlideStripe();
+    setAnnPreview(null);
+    return;
+  }
+  $("#ann-empty").hidden = true;
+  $("#ann-detail").hidden = false;
+  $("#ann-heading").textContent = item.title;
+  renderAnnSlides();
+  pickAnnSlide(0);
+}
+
+function renderAnnSlides() {
+  fillList(
+    $("#ann-slide-list"),
+    currentAnnSlides().map((slide, index) => ({
+      key: String(index),
+      className: "slide-item",
+      html: `<div class="slide-label">Слайд ${index + 1}</div><div class="slide-text">${slide}</div>`,
+    })),
+    (key) => {
+      pickAnnSlide(Number(key));
+    },
+    selectedAnnSlide >= 0 ? String(selectedAnnSlide) : undefined,
+    "selected",
+  );
+  requestAnimationFrame(updateAnnSlideStripe);
+}
+
+function pickAnnSlide(index: number) {
+  const slides = currentAnnSlides();
+  if (index < 0 || index >= slides.length) {
+    return;
+  }
+  selectedAnnSlide = index;
+  const lines = slides[index].split("\n").filter((line) => line.length > 0);
+  // На экран и в превью уходит только текст объявления — без заголовка.
+  setAnnPreview({ lines, mode: "announcement" });
+  document.querySelectorAll("#ann-slide-list .slide-item").forEach((node) => {
+    node.classList.toggle(
+      "selected",
+      (node as HTMLElement).dataset.key === String(index),
+    );
+  });
+  requestAnimationFrame(updateAnnSlideStripe);
+}
+
+function updateAnnSlideStripe() {
+  const host = document.getElementById("ann-slide-host");
+  const stripe = document.getElementById("ann-slide-stripe");
+  const selected = document.querySelector<HTMLElement>(
+    "#ann-slide-list .slide-item.selected",
+  );
+  if (!host || !stripe) {
+    return;
+  }
+  if (!selected) {
+    stripe.style.opacity = "0";
+    return;
+  }
+  stripe.style.opacity = "1";
+  const hostTop = host.getBoundingClientRect().top;
+  const itemTop = selected.getBoundingClientRect().top;
+  const offset =
+    itemTop - hostTop + host.scrollTop + (selected.offsetHeight - 40) / 2;
+  stripe.style.top = `${Math.max(0, offset)}px`;
+}
+
+/* ——— Редактор объявления (модальное окно) ——— */
+
+function annEditor(): HTMLDialogElement {
+  return $("#ann-editor") as HTMLDialogElement;
+}
+
+function openAnnEditor(mode: "create" | "edit") {
+  const editing = mode === "edit" ? selectedAnnouncement() : null;
+  if (mode === "edit" && !editing) {
+    window.alert("Сначала выберите объявление.");
+    return;
+  }
+  const dlg = annEditor();
+  dlg.dataset.mode = mode;
+  input("#ann-edit-title").value = editing?.title ?? "";
+  ($("#ann-edit-text") as HTMLTextAreaElement).value = editing?.text ?? "";
+  dlg.showModal();
+}
+
+function saveAnnEditor() {
+  const dlg = annEditor();
+  const title = input("#ann-edit-title").value.trim() || "Без названия";
+  const text = ($("#ann-edit-text") as HTMLTextAreaElement).value;
+  const editing = dlg.dataset.mode === "edit" ? selectedAnnouncement() : null;
+  if (editing) {
+    editing.title = title;
+    editing.text = text;
+  } else {
+    selectedAnnId = `ann-${Date.now()}`;
+    announcements.unshift({ id: selectedAnnId, title, text });
+  }
+  saveJson(STORAGE.announcements, announcements);
+  dlg.close();
+  renderAnnouncements();
+  if (selectedAnnId) {
+    selectAnnouncement(selectedAnnId);
+  }
+}
+
+function deleteSelectedAnnouncement() {
+  const item = selectedAnnouncement();
+  if (!item) {
+    window.alert("Сначала выберите объявление.");
+    return;
+  }
+  if (!window.confirm(`Удалить объявление «${item.title}»?`)) {
+    return;
+  }
+  announcements = announcements.filter((a) => a.id !== item.id);
+  selectedAnnId = announcements[0]?.id ?? "";
+  saveJson(STORAGE.announcements, announcements);
+  renderAnnouncements();
+  selectAnnouncement(selectedAnnId);
+}
+
+/* ——— Быстрое объявление (модальное окно) ——— */
+
+function annQuick(): HTMLDialogElement {
+  return $("#ann-quick") as HTMLDialogElement;
+}
+
+/* ——— Обновление приложения (релизы GitHub) ——— */
+
+type UpdateStatus = {
+  currentVersion: string;
+  latestVersion: string | null;
+  available: boolean;
+  skipped: boolean;
+  mandatory: boolean;
+  notes: string | null;
+  publishedAt: string | null;
+  downloadUrl: string | null;
+  parts: string[] | null;
+  sha256: string | null;
+  sizeBytes: number | null;
+  error: string | null;
+};
+
+type UpdateProgress = { downloaded: number; total: number | null; percent: number | null };
+
+/** Сведения о приложении для блока «О нас» (команда `get_app_info`). */
+type AppInfo = { version: string; arch: string; os: string; identifier: string };
+
+let pendingUpdate: UpdateStatus | null = null;
+let updateProgressUnlisten: (() => void) | null = null;
+
+function updateDialog(): HTMLDialogElement {
+  return $("#update-dialog") as HTMLDialogElement;
+}
+
+/** Размер файла в человекочитаемом виде («12,4 МБ»). */
+function formatSize(bytes: number | null): string {
+  if (!bytes || bytes <= 0) {
+    return "";
+  }
+  const units = ["Б", "КБ", "МБ", "ГБ"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const text = unit === 0 || value >= 10 ? Math.round(value).toString() : value.toFixed(1);
+  return `${text} ${units[unit]}`;
+}
+
+/** Показывает список изменений: строка, заканчивающаяся двоеточием, — заголовок. */
+function renderUpdateNotes(notes: string | null) {
+  const list = document.getElementById("update-notes");
+  if (!list) {
+    return;
+  }
+  list.textContent = "";
+  const lines = (notes ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    lines.push("Описание изменений не указано.");
+  }
+  for (const line of lines) {
+    const item = document.createElement("li");
+    const heading = /^[^:]{1,60}:$/.test(line) || line.startsWith("#");
+    item.className = heading ? "update-note heading" : "update-note";
+    item.textContent = line.replace(/^#+\s*/, "").replace(/^[-*•]\s*/, "");
+    list.append(item);
+  }
+}
+
+function setUpdateProgress(percent: number | null, label: string | null) {
+  const bar = document.getElementById("update-progress-bar");
+  if (bar) {
+    bar.style.width = `${Math.min(100, Math.max(0, percent ?? 0))}%`;
+  }
+  const text = document.getElementById("update-progress-label");
+  if (text) {
+    text.textContent = label ?? "Скачивание…";
+  }
+}
+
+/** Блокирует кнопки на время скачивания и показывает полосу прогресса. */
+function setUpdateBusy(busy: boolean) {
+  const install = document.getElementById("update-install") as HTMLButtonElement | null;
+  if (install) {
+    install.disabled = busy;
+    install.textContent = busy ? "Идёт обновление…" : "Обновить";
+  }
+  const optional = pendingUpdate?.mandatory ?? false;
+  const skip = document.getElementById("update-skip") as HTMLButtonElement | null;
+  const later = document.getElementById("update-later") as HTMLButtonElement | null;
+  if (skip) {
+    skip.disabled = busy || optional;
+  }
+  if (later) {
+    later.disabled = busy || optional;
+  }
+  const progress = document.getElementById("update-progress");
+  if (progress) {
+    progress.hidden = !busy;
+  }
+  if (!busy) {
+    setUpdateProgress(0, null);
+  }
+}
+
+function setUpdateError(message: string | null) {
+  const el = document.getElementById("update-error");
+  if (!el) {
+    return;
+  }
+  el.hidden = !message;
+  el.textContent = message ?? "";
+}
+
+function openUpdateDialog(status: UpdateStatus) {
+  pendingUpdate = status;
+  setUpdateError(null);
+  setUpdateBusy(false);
+  const versions = document.getElementById("update-versions");
+  if (versions) {
+    versions.textContent = status.mandatory
+      ? `Требуется версия ${status.latestVersion} — у вас ${status.currentVersion}. Обновление обязательно.`
+      : `Доступна версия ${status.latestVersion} — у вас ${status.currentVersion}.`;
+  }
+  const published = document.getElementById("update-published");
+  if (published) {
+    published.hidden = !status.publishedAt;
+    published.textContent = status.publishedAt ? `Опубликовано: ${status.publishedAt}` : "";
+  }
+  renderUpdateNotes(status.notes);
+  updateDialog().showModal();
+}
+
+/** Версия, разрядность и система в блоке «О нас». */
+async function refreshAppInfo() {
+  try {
+    const info = await invoke<AppInfo>("get_app_info");
+    const version = document.getElementById("about-version");
+    if (version) {
+      version.textContent = info.version;
+    }
+    const build = document.getElementById("about-build");
+    if (build) {
+      build.textContent = `Сборка ${info.arch} · ${info.os}`;
+    }
+  } catch (error) {
+    logError("update", "не удалось получить сведения о приложении", error);
+  }
+}
+
+/** Время последней проверки обновления для строки состояния. */
+function checkedAt(): string {
+  return new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Строка состояния под кнопкой «Проверить обновление». */
+function setAboutUpdateStatus(message: string | null, isError = false) {
+  const el = document.getElementById("about-update-status");
+  if (!el) {
+    return;
+  }
+  el.hidden = !message;
+  el.textContent = message ?? "";
+  el.classList.toggle("error", isError);
+}
+
+/** Кнопка ручной проверки: пока идёт проверка, она заблокирована. */
+function setCheckUpdatesBusy(busy: boolean) {
+  const btn = document.getElementById("check-updates") as HTMLButtonElement | null;
+  if (!btn) {
+    return;
+  }
+  btn.disabled = busy;
+  btn.textContent = busy ? "Проверка…" : "Проверить обновление";
+}
+
+/**
+ * Проверка обновления. `force` — ручная проверка кнопкой в блоке «О нас»:
+ * пропущенная версия предлагается снова, а результат виден и в диалоге,
+ * и в строке состояния под кнопкой.
+ */
+async function checkForUpdates(force: boolean) {
+  logInfo("update", force ? "ручная проверка обновлений" : "проверка обновлений при запуске");
+  if (force) {
+    setCheckUpdatesBusy(true);
+    setAboutUpdateStatus("Проверка обновления…");
+  }
+  let status: UpdateStatus;
+  try {
+    status = await invoke<UpdateStatus>("check_app_update", { force });
+  } catch (error) {
+    logError("update", "не удалось проверить обновление", error);
+    const message = "Не удалось проверить обновление. Подробности — в журнале работы.";
+    setAboutUpdateStatus(message, true);
+    if (force) {
+      window.alert(message);
+    }
+    return;
+  } finally {
+    if (force) {
+      setCheckUpdatesBusy(false);
+    }
+  }
+  if (status.error) {
+    logError("update", `ошибка проверки обновления: ${status.error}`);
+    setAboutUpdateStatus(`Не удалось проверить обновление: ${status.error}`, true);
+    if (force) {
+      window.alert(`Не удалось проверить обновление:\n${status.error}`);
+    }
+    return;
+  }
+  if (!status.available) {
+    logInfo("update", `обновлений нет: установлена ${status.currentVersion}`);
+    const message = status.skipped
+      ? `Версия ${status.latestVersion} пропущена — следующая будет предложена сама.`
+      : `У вас последняя версия: ${status.currentVersion}.`;
+    setAboutUpdateStatus(`${message} Проверено в ${checkedAt()}.`);
+    if (force) {
+      window.alert(message);
+    }
+    return;
+  }
+  logInfo("update", `доступна версия ${status.latestVersion}`);
+  setAboutUpdateStatus(`Доступна версия ${status.latestVersion}. Проверено в ${checkedAt()}.`);
+  openUpdateDialog(status);
+}
+
+/** «Пропустить эту версию» — версия запоминается до следующего релиза. */
+async function skipCurrentUpdate() {
+  const status = pendingUpdate;
+  if (!status?.latestVersion) {
+    updateDialog().close();
+    return;
+  }
+  try {
+    await invoke("skip_app_update", { version: status.latestVersion });
+    logInfo("update", `версия ${status.latestVersion} пропущена до следующего релиза`);
+    setAboutUpdateStatus(`Версия ${status.latestVersion} пропущена — следующая будет предложена сама.`);
+  } catch (error) {
+    logError("update", "не удалось запомнить пропущенную версию", error);
+  }
+  updateDialog().close();
+}
+
+/** «Обновить» — скачивание с прогрессом, затем установка и перезапуск. */
+async function installUpdate() {
+  const status = pendingUpdate;
+  const hasParts = (status?.parts?.length ?? 0) > 0;
+  if (!status || (!status.downloadUrl && !hasParts)) {
+    setUpdateError("В описании обновления нет ссылок на файлы.");
+    return;
+  }
+  setUpdateError(null);
+  setUpdateBusy(true);
+  setUpdateProgress(0, "Подготовка…");
+  if (!updateProgressUnlisten) {
+    updateProgressUnlisten = await listen<UpdateProgress>("update-progress", (event) => {
+      const { downloaded, total, percent } = event.payload;
+      const totalLabel = total ? ` из ${formatSize(total)}` : "";
+      setUpdateProgress(
+        percent,
+        percent == null
+          ? `Скачано ${formatSize(downloaded)}${totalLabel}`
+          : `Скачивание… ${Math.round(percent)} %${totalLabel ? ` (${formatSize(downloaded)}${totalLabel})` : ""}`,
+      );
+    });
+  }
+  try {
+    await invoke<string>("install_app_update", {
+      url: status.downloadUrl,
+      parts: status.parts,
+      sha256: status.sha256,
+    });
+    setUpdateProgress(100, "Установка запущена. Приложение закроется и запустится заново.");
+  } catch (error) {
+    logError("update", "не удалось установить обновление", error);
+    setUpdateBusy(false);
+    setUpdateError(`Не удалось установить обновление: ${String(error)}`);
+  }
+}
+
+function switchAnnQuickMode(mode: string) {
+  document.querySelectorAll("[data-annquick-mode]").forEach((node) => {
+    node.classList.toggle(
+      "active",
+      (node as HTMLElement).dataset.annquickMode === mode,
+    );
+  });
+  document.querySelectorAll("[data-annquick-panel]").forEach((node) => {
+    const el = node as HTMLElement;
+    const match = el.dataset.annquickPanel === mode;
+    el.hidden = !match;
+    el.classList.toggle("active", match);
+  });
+}
+
+function openAnnQuick() {
+  input("#ann-quick-text").value = "";
+  input("#ann-quick-plate").value = "";
+  switchAnnQuickMode("manual");
+  annQuick().showModal();
+}
+
+/** Показ быстрого объявления: формирует слайды и запускает показ через Трансляцию. */
+async function showAnnQuick() {
+  const mode =
+    document.querySelector<HTMLElement>(".ann-quick-tab.active")?.dataset
+      .annquickMode ?? "manual";
+  let title = "Быстрое объявление";
+  let slides: string[] = [];
+
+  if (mode === "car") {
+    const plate = input("#ann-quick-plate").value.trim();
+    if (!plate) {
+      window.alert("Введите госномер автомобиля.");
+      return;
+    }
+    slides = [`Просьба убрать автомобиль госномер: ${plate.toUpperCase()}`];
+    title = `Убрать автомобиль ${plate.toUpperCase()}`;
+  } else {
+    const text = ($("#ann-quick-text") as HTMLTextAreaElement).value;
+    slides = text
+      .split(/\n\s*\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (slides.length === 0) {
+      window.alert("Введите текст объявления.");
+      return;
+    }
+    title = "Быстрое объявление";
+  }
+
+  const ok = await openTextInBroadcast({ title, slides, mode: "announcement" }, true, 0);
+  if (ok) {
+    annQuick().close();
+    switchTab("broadcast");
+  }
+}
+
+function bindSongsUi() {
+  let songTimer = 0;
+  input("#song-query").addEventListener("input", () => {
+    window.clearTimeout(songTimer);
+    songTimer = window.setTimeout(() => void loadSongs(), 120);
+  });
+
+  select("#song-collection").addEventListener("change", () => {
+    const value = select("#song-collection").value;
+    preferredCollectionId = value !== "all" ? Number(value) : preferredCollectionId;
+    void loadSongs();
+  });
+
+  document.querySelectorAll("[data-menu]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const id = (btn as HTMLElement).dataset.menu;
+      if (!id) {
+        return;
+      }
+      const panel = document.getElementById(id);
+      if (!panel) {
+        return;
+      }
+      const willOpen = panel.hidden;
+      closeMenus();
+      panel.hidden = !willOpen;
+    });
+  });
+
+  document.addEventListener("click", () => closeMenus());
+
+  document.querySelectorAll("[data-song-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeMenus();
+      const action = (btn as HTMLElement).dataset.songAction;
+      if (action === "manual") {
+        openSongEditor({
+          mode: "create",
+          collections,
+          preferredCollectionId:
+            selectedCollectionFilter() ?? preferredCollectionId,
+          onSaved: onSongSaved,
+        });
+        return;
+      }
+      if (action === "edit") {
+        if (!selectedSong) {
+          window.alert("Сначала выберите песню.");
+          return;
+        }
+        openSongEditor({
+          mode: "edit",
+          song: selectedSong,
+          collections,
+          onSaved: onSongSaved,
+        });
+        return;
+      }
+      if (action === "delete") {
+        void deleteSelectedSong();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-collection-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeMenus();
+      const action = (btn as HTMLElement).dataset.collectionAction;
+      if (action === "create") {
+        openCollectionEditor({
+          mode: "create",
+          onSaved: onCollectionSaved,
+        });
+        return;
+      }
+      if (action === "edit") {
+        const current = currentCollectionFromFilter();
+        if (!current) {
+          window.alert("Сначала выберите сборник в списке (не «Все песни»).");
+          return;
+        }
+        openCollectionEditor({
+          mode: "edit",
+          collection: current,
+          onSaved: onCollectionSaved,
+        });
+        return;
+      }
+      if (action === "delete") {
+        const current = currentCollectionFromFilter();
+        if (!current) {
+          window.alert("Сначала выберите сборник в списке (не «Все песни»).");
+          return;
+        }
+        openCollectionDeleteDialog({
+          collection: current,
+          others: collections.filter((c) => c.id !== current.id),
+          onDeleted: onCollectionDeleted,
+        });
+        return;
+      }
+      if (action === "import-json") {
+        void importLegacyChorusJson();
+      }
+    });
+  });
+  document.querySelectorAll("[data-sort]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const value = (btn as HTMLElement).dataset.sort;
+      songSort = value === "id" ? "id" : "title";
+      closeMenus();
+      void loadSongs();
+    });
+  });
+
+  $("#songs-start-show").addEventListener("click", () => {
+    void startSongShow();
+  });
+
+  $("#song-to-playlist").addEventListener("click", () => {
+    if (!selectedSong) {
+      return;
+    }
+    void addSongToQuickPlaylist(
+      selectedSong,
+      selectedSlideIndex >= 0 ? selectedSlideIndex : 0,
+    ).then(() => {
+      // Без перехода в «Трансляцию»: остаёмся в «Песнях», чтобы добавлять несколько песен.
+      updateSongToPlaylistButton();
+    });
+  });
+
+  const slideHost = document.getElementById("slide-host");
+  slideHost?.addEventListener("scroll", () => updateSlideStripe());
+  document.getElementById("ann-slide-host")?.addEventListener("scroll", () => {
+    updateAnnSlideStripe();
+  });
+  document.getElementById("bible-verse-host")?.addEventListener("scroll", () => {
+    updateBibleVerseStripe();
+  });
+  window.addEventListener("resize", () => {
+    placeNavStripe();
+    updateSlideStripe();
+    updateAnnSlideStripe();
+    updateBibleVerseStripe();
+  });
+
+  songsPreviewFrame().addEventListener("load", () => {
+    applyPreviewAspect(songsPreviewFrame(), previewAspect.width, previewAspect.height);
+    if (pending?.mode === "song") {
+      setSongsPreview(pending);
+    } else {
+      setSongsPreview(null);
+    }
+  });
+}
+
+function bind() {
+  document.querySelectorAll(".nav-item").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const name = (tab as HTMLElement).dataset.tab;
+      if (!name || (tab as HTMLButtonElement).disabled) {
+        return;
+      }
+      switchTab(name);
+      if (name === "overview") {
+        void loadOverview();
+      }
+      if (name === "settings") {
+        void loadMonitorsSettings();
+      }
+      if (name === "songs") {
+        applyPreviewAspect(songsPreviewFrame(), previewAspect.width, previewAspect.height);
+        requestAnimationFrame(updateSlideStripe);
+        updateSongToPlaylistButton();
+        void loadCollections().then(() => loadSongs());
+      }
+      if (name === "announcements") {
+        applyPreviewAspect(annPreviewFrame(), previewAspect.width, previewAspect.height);
+        requestAnimationFrame(updateAnnSlideStripe);
+      }
+      if (name === "bible") {
+        applyPreviewAspect(biblePreviewFrame(), previewAspect.width, previewAspect.height);
+        requestAnimationFrame(updateBibleVerseStripe);
+      }
+      if (name === "broadcast") {
+        refreshBroadcastPreviewAspect(previewAspect.width, previewAspect.height);
+      }
+    });
+  });
+
+  $("#theme-toggle").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    applyTheme(next);
+  });
+  const themeSelect = document.getElementById("interface-theme") as HTMLSelectElement | null;
+  if (themeSelect) {
+    const storedTheme = localStorage.getItem(STORAGE.theme) || "system";
+    themeSelect.value = storedTheme;
+    themeSelect.addEventListener("change", () => {
+      applyTheme(themeSelect.value as "system" | "dark" | "light");
+    });
+  }
+  const confirmClose = document.getElementById("confirm-close") as HTMLInputElement | null;
+  if (confirmClose) {
+    confirmClose.checked = localStorage.getItem(STORAGE.confirmClose) === "1";
+    confirmClose.addEventListener("change", () => {
+      localStorage.setItem(STORAGE.confirmClose, confirmClose.checked ? "1" : "0");
+      void invoke("set_close_confirmation", { enabled: confirmClose.checked }).catch((error) => {
+        console.error("Failed to update close confirmation", error);
+      });
+    });
+    void invoke("set_close_confirmation", { enabled: confirmClose.checked }).catch((error) => {
+      console.error("Failed to initialize close confirmation", error);
+    });
+  }
+  bindSongsUi();
+  bindSongEditor();
+  bindCollectionEditor();
+  bindBroadcast({
+    persistentEnabled: persistentDisplayEnabled,
+    slideLabel,
+    bumpShow,
+    refreshIcons,
+    previewAspect: () => previewAspect,
+  });
+
+  const broadcastPreview = document.getElementById("bc-preview-frame") as HTMLIFrameElement | null;
+  songsPreviewFrame().addEventListener("load", () => refreshActiveStylePreviews());
+  broadcastPreview?.addEventListener("load", () => refreshActiveStylePreviews());
+  annPreviewFrame().addEventListener("load", () => {
+    applyPreviewAspect(annPreviewFrame(), previewAspect.width, previewAspect.height);
+    // iframe перезагрузился — повторить текущий слайд/пустое состояние.
+    if (pending?.mode === "announcement") {
+      setAnnPreview(pending);
+    } else {
+      setAnnPreview(null);
+    }
+    refreshActiveStylePreviews();
+  });
+  biblePreviewFrame().addEventListener("load", () => {
+    applyPreviewAspect(biblePreviewFrame(), previewAspect.width, previewAspect.height);
+    // iframe перезагрузился — повторить текущий стих/пустое состояние.
+    if (pending?.mode === "bible") {
+      setBiblePreview(pending);
+    } else {
+      setBiblePreview(null);
+    }
+    refreshActiveStylePreviews();
+  });
+
+  bindStylesUi({
+    refreshIcons,
+    previewFrames: () => {
+      const frames: HTMLIFrameElement[] = [];
+      const songs = songsPreviewFrame();
+      if (songs) {
+        frames.push(songs);
+      }
+      const broadcast = document.getElementById("bc-preview-frame") as HTMLIFrameElement | null;
+      if (broadcast) {
+        frames.push(broadcast);
+      }
+      frames.push(annPreviewFrame());
+      frames.push(biblePreviewFrame());
+      return frames;
+    },
+    previewBackgroundEnabled: (frame) =>
+      frame.id !== "bc-preview-frame" || isBroadcastLive() || persistentDisplayEnabled(),
+  });
+
+  // Кастомные горячие клавиши (глобальный keydown + вкладка настроек).
+  registerHotkeys({
+    switchTab: (tab: string) => switchTab(tab),
+    activeTab: () =>
+      document.querySelector<HTMLElement>(".view.active")?.dataset.view ?? "",
+    startShow: () => startShowForActiveView(),
+    endShow: () => hotkeyEndShow(),
+    nextSlide: () => stepSlides(1),
+    prevSlide: () => stepSlides(-1),
+  });
+  bindHotkeysUi();
+
+  select("#overview-collection").addEventListener("change", () => void loadOverview());
+
+  let bibleSearchTimer = 0;
+  input("#bible-search-query").addEventListener("input", () => {
+    window.clearTimeout(bibleSearchTimer);
+    bibleSearchTimer = window.setTimeout(() => void searchBibleQuery(), 120);
+  });
+  input("#bible-search-query").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    const verse = bibleSearchResults[bibleSearchIndex >= 0 ? bibleSearchIndex : 0];
+    if (verse) {
+      void showBibleSearchResultOnScreen(verse);
+    }
+  });
+  $("#bible-show").addEventListener("click", async () => {
+    await startBibleVerseShow();
+  });
+
+  document.querySelectorAll("[data-ann-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeMenus();
+      const action = (btn as HTMLElement).dataset.annAction;
+      if (action === "create") {
+        openAnnEditor("create");
+      } else if (action === "edit") {
+        openAnnEditor("edit");
+      } else if (action === "delete") {
+        deleteSelectedAnnouncement();
+      }
+    });
+  });
+
+  input("#ann-query").addEventListener("input", () => renderAnnouncements());
+
+  $("#ann-editor-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveAnnEditor();
+  });
+  $("#ann-edit-cancel").addEventListener("click", () => annEditor().close());
+
+  $("#ann-show").addEventListener("click", async () => {
+    await startAnnouncementShow();
+  });
+
+  // Быстрое объявление (модалка с двумя режимами).
+  $("#ann-quick-btn").addEventListener("click", () => openAnnQuick());
+  document.querySelectorAll("[data-annquick-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchAnnQuickMode((btn as HTMLElement).dataset.annquickMode ?? "manual");
+    });
+  });
+  input("#ann-quick-plate").addEventListener("input", (event) => {
+    const el = event.target as HTMLInputElement;
+    const pos = el.selectionStart ?? el.value.length;
+    // Госномер всегда в верхнем регистре (автокапитализация).
+    el.value = el.value.toUpperCase();
+    el.setSelectionRange(pos, pos);
+  });
+  $("#ann-quick-cancel").addEventListener("click", () => annQuick().close());
+  $("#ann-quick-show").addEventListener("click", () => void showAnnQuick());
+
+  // Обновление приложения: кнопка в «О нас» и три действия в диалоге.
+  document
+    .getElementById("check-updates")
+    ?.addEventListener("click", () => void checkForUpdates(true));
+  $("#update-install").addEventListener("click", () => void installUpdate());
+  $("#update-skip").addEventListener("click", () => void skipCurrentUpdate());
+  $("#update-later").addEventListener("click", () => {
+    const latest = pendingUpdate?.latestVersion;
+    if (latest) {
+      setAboutUpdateStatus(`Обновление до версии ${latest} отложено — напомним при следующем запуске.`);
+    }
+    updateDialog().close();
+  });
+  updateDialog().addEventListener("cancel", (event) => {
+    // Обязательное обновление нельзя отложить клавишей Esc.
+    if (pendingUpdate?.mandatory) {
+      event.preventDefault();
+    }
+  });
+
+  select("#overview-top").addEventListener("change", () => void loadOverview());
+
+  const persistentToggle = document.getElementById("persistent-display") as HTMLInputElement | null;
+  persistentToggle?.addEventListener("change", async () => {
+    if (isSelectedMonitorPrimary()) {
+      persistentToggle.checked = false;
+      setPersistentDisplayEnabled(false);
+      syncPersistentDisplayUi();
+      window.alert("Постоянный фон можно включить только для внешнего (не основного) монитора.");
+      return;
+    }
+    setPersistentDisplayEnabled(persistentToggle.checked);
+    if (persistentToggle.checked) {
+      await ensureDisplayWindow();
+    } else {
+      await closeDisplayWindow();
+    }
+    refreshActiveStylePreviews();
+  });
+  $("#backup-database").addEventListener("click", () => void backupDatabase());
+  $("#restore-database").addEventListener("click", () => void restoreDatabase());
+  document
+    .getElementById("open-logs-folder")
+    ?.addEventListener("click", () => void openJournalFolder());
+  document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = (btn as HTMLElement).dataset.settingsTab;
+      if (tab === "logs") {
+        void refreshLogsHint();
+      }
+      if (tab === "about") {
+        // Версию и сведения о сборке обновляем при каждом открытии вкладки.
+        void refreshAppInfo();
+      }
+    });
+  });
+}
+
+async function boot() {
+  installGlobalLogging("controller");
+  logInfo("boot", "запуск интерфейса");
+  applyTheme((localStorage.getItem(STORAGE.theme) as "system" | "dark" | "light") || "system");
+  refreshIcons();
+  // Хоткеи загружаем из БД до регистрации слушателей.
+  await bootHotkeys().catch((error) => logError("boot", "не удалось загрузить горячие клавиши", error));
+  try {
+    bind();
+  } catch (error) {
+    // Один не найденный элемент не должен оставлять пустыми дашборд и списки:
+    // пишем ошибку в журнал и продолжаем запуск.
+    logError("boot", "часть обработчиков не привязана — интерфейс может работать неполно", error);
+  }
+  requestAnimationFrame(placeNavStripe);
+  logInfo("boot", "интерфейс привязан, горячие клавиши загружены");
+
+  loadAnnouncements();
+  setBiblePreview(null);
+  setAnnPreview(null);
+  setSongsPreview(null);
+
+  await bootStyles();
+  logInfo("boot", "стили загружены");
+
+  await resolvePreviewAspect();
+  refreshBroadcastPreviewAspect(previewAspect.width, previewAspect.height);
+  const storedMonitor = localStorage.getItem(STORAGE.monitor);
+  if (storedMonitor != null) {
+    selectedMonitorIndex = Number(storedMonitor);
+    setDisplayMonitorIndex(selectedMonitorIndex);
+    await invoke("set_display_monitor", { index: selectedMonitorIndex }).catch(() => undefined);
+  } else {
+    setDisplayMonitorIndex(selectedMonitorIndex);
+  }
+  syncPersistentDisplayUi();
+  if (persistentDisplayEnabled() && !isSelectedMonitorPrimary()) {
+    await ensureDisplayWindow().catch(() => undefined);
+  }
+
+  await loadCollections();
+  logInfo("boot", "коллекции загружены", { count: collections.length });
+  // Песни грузим сразу — не ждём Библию, иначе вкладка «Песни» может открыться с пустым списком.
+  const songsReady = loadSongs();
+  await loadBooks();
+  await songsReady;
+  await loadOverview();
+  if (books[0]) {
+    await selectBook(books[0]);
+  }
+  refreshIcons();
+  requestAnimationFrame(placeNavStripe);
+  logInfo("boot", "запуск завершён", {
+    books: books.length,
+    announcements: announcements.length,
+  });
+  void logJournalLocation();
+  void refreshLogsHint();
+  void refreshAppInfo();
+  // Проверку обновления запускаем после отрисовки интерфейса, чтобы не тормозить старт.
+  window.setTimeout(() => void checkForUpdates(false), 3000);
+}
+
+void boot().catch((error) => {
+  logError("boot", "критическая ошибка запуска", error);
+});

@@ -1,0 +1,45 @@
+{
+  "productName": "ChyguiSlide",
+  "version": "0.1.1",
+  "identifier": "com.chyguislide.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "controller",
+        "title": "ChyguiSlide",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 540,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/*", "resources/wallpapers/*"],
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"]
+  }
+}

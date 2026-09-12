@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Демо анимаций переключения слайдов</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-border: #232733;
+    --ink: #eef0f4;
+    --ink-dim: #9aa1b0;
+    --accent: #d8b26a;
+    --accent-soft: rgba(216, 178, 106, 0.18);
+    --stage-bg-1: #1a2230;
+    --stage-bg-2: #241a30;
+    --mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+
+  header {
+    margin-bottom: 40px;
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 28px;
+  }
+
+  header .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+
+  header h1 {
+    font-size: 32px;
+    font-weight: 400;
+    margin: 0 0 12px;
+    line-height: 1.25;
+  }
+
+  header p {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--ink-dim);
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 640px;
+    margin: 0;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 28px;
+  }
+
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .card-head {
+    padding: 18px 20px 14px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  .card-head .num {
+    font-family: var(--mono);
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+  }
+
+  .card-head h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 4px 0 0;
+    color: var(--ink);
+  }
+
+  .card-head .desc {
+    font-size: 12.5px;
+    color: var(--ink-dim);
+    line-height: 1.5;
+    margin-top: 4px;
+  }
+
+  .stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    margin: 0 20px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: linear-gradient(160deg, var(--stage-bg-1), var(--stage-bg-2));
+    border: 1px solid #2a2f3d;
+  }
+
+  /* subtle static background texture to simulate a projection background */
+  .stage::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 20% 15%, rgba(216,178,106,0.10), transparent 45%),
+      radial-gradient(circle at 85% 80%, rgba(120,140,255,0.08), transparent 50%);
+    pointer-events: none;
+  }
+
+  .text-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    padding: 8% 10%;
+    will-change: opacity, transform, filter, clip-path;
+  }
+
+  .text-layer .line {
+    color: #f5f2ea;
+    font-size: clamp(15px, 3.4vw, 26px);
+    line-height: 1.5;
+    text-shadow: 0 2px 14px rgba(0,0,0,0.55), 0 1px 2px rgba(0,0,0,0.6);
+    font-weight: 500;
+  }
+
+  .text-layer .line + .line {
+    margin-top: 6px;
+    color: #c9cedb;
+    font-size: clamp(12px, 2.4vw, 18px);
+  }
+
+  .controls {
+    padding: 16px 20px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  button.play {
+    appearance: none;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+
+  button.play:hover { background: rgba(216,178,106,0.28); }
+  button.play:active { transform: scale(0.97); }
+
+  .timing {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-left: auto;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(11,13,18,0.92);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--panel-border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  .topbar .title {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    letter-spacing: 0.06em;
+  }
+
+  button.play-all {
+    appearance: none;
+    border: 1px solid #3a4256;
+    background: #171b25;
+    color: var(--ink);
+    font-size: 13px;
+    padding: 8px 18px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  button.play-all:hover { border-color: var(--accent); color: var(--accent); }
+
+  .speed-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+
+  select {
+    background: #171b25;
+    color: var(--ink);
+    border: 1px solid #2a2f3d;
+    border-radius: 3px;
+    padding: 5px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--panel-border);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="title">SLIDE&nbsp;TRANSITIONS&nbsp;/&nbsp;DEMO</span>
+  <button class="play-all" id="playAll">▶ Проиграть всё по очереди</button>
+  <div class="speed-row">
+    Длительность:
+    <select id="durationSelect">
+      <option value="250">250 мс</option>
+      <option value="350" selected>350 мс</option>
+      <option value="500">500 мс</option>
+      <option value="800">800 мс</option>
+    </select>
+  </div>
+</div>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Сравнение вариантов</p>
+    <h1>Анимации переключения текста поверх статичного фона</h1>
+    <p>Фон в каждом примере неизменен — анимируется только текстовый слой. Нажимайте «Играть» на каждой карточке отдельно, либо запустите «Проиграть всё по очереди» вверху. Текст демонстрационный.</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    Все переходы используют два независимых текстовых слоя (double buffering): новый текст готовится и рендерится в скрытом состоянии до начала анимации, поэтому нет «скачка» в момент смены прозрачности. Все примеры анимируют только opacity / transform / filter / clip-path — свойства, которые не вызывают релейаут.
+  </footer>
+</div>
+
+<script>
+const slides = [
+  { main: "Свят, свят, свят —", sub: "вся земля полна славы Его" },
+  { main: "Бог есть любовь,", sub: "и пребывающий в любви пребывает в Боге" },
+  { main: "Господь — Пастырь мой;", sub: "я ни в чём не буду нуждаться" },
+];
+
+const demos = [
+  {
+    id: 'fade',
+    num: '01',
+    title: 'Простой Fade (текущий вариант)',
+    desc: 'Один текстовый блок: opacity → 0, смена текста, opacity → 1. Базовый вариант, применённый сейчас.',
+    timing: 'opacity only',
+    run: runFade
+  },
+  {
+    id: 'crossfade',
+    num: '02',
+    title: 'Crossfade (два слоя)',
+    desc: 'Старый и новый текст анимируются одновременно на встречу друг другу: старый угасает, новый проявляется поверх.',
+    timing: '2 layers · overlap',
+    run: runCrossfade
+  },
+  {
+    id: 'fadeslide',
+    num: '03',
+    title: 'Fade + Slide',
+    desc: 'Новый текст проявляется, слегка «подъезжая» снизу вверх. Даёт ощущение движения, а не просто мигания.',
+    timing: 'opacity + translateY',
+    run: runFadeSlide
+  },
+  {
+    id: 'fadescale',
+    num: '04',
+    title: 'Fade + Scale',
+    desc: 'Текст стартует чуть уменьшенным (96%) и вырастает до 100% вместе с проявлением. Ощущение глубины.',
+    timing: 'opacity + scale',
+    run: runFadeScale
+  },
+  {
+    id: 'blur',
+    num: '05',
+    title: 'Blur → Sharp',
+    desc: 'Новый текст сначала размыт, затем фокусируется вместе с fade-in. Выглядит дорого, но чуть тяжелее по ресурсам.',
+    timing: 'opacity + filter blur',
+    run: runBlur
+  },
+  {
+    id: 'wipe',
+    num: '06',
+    title: 'Wipe (открытие по маске)',
+    desc: 'Текст «открывается» слева направо через clip-path, без изменения прозрачности. Ощущение печати построчно.',
+    timing: 'clip-path',
+    run: runWipe
+  },
+  {
+    id: 'stagger',
+    num: '07',
+    title: 'Line-by-line Stagger',
+    desc: 'Crossfade + Slide, но каждая строка анимируется с небольшой задержкой относительно предыдущей.',
+    timing: '2 layers · staggered',
+    run: runStagger
+  },
+];
+
+const grid = document.getElementById('grid');
+const state = {}; // per-demo current slide index
+
+demos.forEach((demo, i) => {
+  state[demo.id] = 0;
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="card-head">
+      <div>
+        <div class="num">${demo.num}</div>
+        <h2>${demo.title}</h2>
+        <div class="desc">${demo.desc}</div>
+      </div>
+    </div>
+    <div class="stage" id="stage-${demo.id}">
+      <div class="text-layer layer-a" id="${demo.id}-a" style="opacity:1;">
+        <div class="line">${slides[0].main}</div>
+        <div class="line">${slides[0].sub}</div>
+      </div>
+      <div class="text-layer layer-b" id="${demo.id}-b" style="opacity:0;">
+        <div class="line"></div>
+        <div class="line"></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="play" data-id="${demo.id}">▶ Играть</button>
+      <span class="timing">${demo.timing}</span>
+    </div>
+  `;
+  grid.appendChild(card);
+});
+
+document.querySelectorAll('button.play').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.id;
+    const demo = demos.find(d => d.id === id);
+    playDemo(demo);
+  });
+});
+
+document.getElementById('playAll').addEventListener('click', async () => {
+  for (const demo of demos) {
+    await playDemo(demo, true);
+    await sleep(450);
+  }
+});
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function getDuration() {
+  return parseInt(document.getElementById('durationSelect').value, 10);
+}
+
+function nextSlideFor(id) {
+  state[id] = (state[id] + 1) % slides.length;
+  return slides[state[id]];
+}
+
+function fillLayer(el, slide) {
+  const lines = el.querySelectorAll('.line');
+  lines[0].textContent = slide.main;
+  lines[1].textContent = slide.sub;
+}
+
+async function playDemo(demo) {
+  return demo.run(demo.id);
+}
+
+/* ---------- 01: simple fade (single layer, current approach) ---------- */
+async function runFade(id) {
+  const el = document.getElementById(`${id}-a`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+
+  el.style.transition = `opacity ${dur/2}ms ease-in-out`;
+  el.style.opacity = 0;
+  await sleep(dur/2);
+  fillLayer(el, slide);
+  el.style.opacity = 1;
+  await sleep(dur/2);
+}
+
+/* ---------- 02: crossfade, two layers ---------- */
+async function runCrossfade(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 0;
+  bottom.style.transform = 'none';
+  bottom.style.filter = 'none';
+  bottom.style.clipPath = 'none';
+  void bottom.offsetHeight; // force layout, ensure render before animating
+
+  top.style.transition = `opacity ${dur}ms cubic-bezier(0.4,0,0.2,1)`;
+  bottom.style.transition = `opacity ${dur}ms cubic-bezier(0.4,0,0.2,1)`;
+  top.style.opacity = 0;
+  bottom.style.opacity = 1;
+  await sleep(dur);
+  swapTopmost(id, a, b);
+}
+
+/* ---------- 03: fade + slide ---------- */
+async function runFadeSlide(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 0;
+  bottom.style.transform = 'translateY(18px)';
+  bottom.style.filter = 'none';
+  bottom.style.clipPath = 'none';
+  void bottom.offsetHeight;
+
+  const easing = `${dur}ms cubic-bezier(0.22,0.61,0.36,1)`;
+  top.style.transition = `opacity ${easing}, transform ${easing}`;
+  bottom.style.transition = `opacity ${easing}, transform ${easing}`;
+  top.style.opacity = 0;
+  top.style.transform = 'translateY(-14px)';
+  bottom.style.opacity = 1;
+  bottom.style.transform = 'translateY(0px)';
+  await sleep(dur);
+  top.style.transform = 'translateY(0px)';
+  swapTopmost(id, a, b);
+}
+
+/* ---------- 04: fade + scale ---------- */
+async function runFadeScale(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 0;
+  bottom.style.transform = 'scale(0.96)';
+  bottom.style.filter = 'none';
+  bottom.style.clipPath = 'none';
+  void bottom.offsetHeight;
+
+  const easing = `${dur}ms cubic-bezier(0.25,0.1,0.25,1)`;
+  top.style.transition = `opacity ${easing}, transform ${easing}`;
+  bottom.style.transition = `opacity ${easing}, transform ${easing}`;
+  top.style.opacity = 0;
+  top.style.transform = 'scale(1.03)';
+  bottom.style.opacity = 1;
+  bottom.style.transform = 'scale(1)';
+  await sleep(dur);
+  top.style.transform = 'scale(1)';
+  swapTopmost(id, a, b);
+}
+
+/* ---------- 05: blur to sharp ---------- */
+async function runBlur(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 0;
+  bottom.style.transform = 'none';
+  bottom.style.filter = 'blur(10px)';
+  bottom.style.clipPath = 'none';
+  void bottom.offsetHeight;
+
+  const easing = `${dur}ms ease-out`;
+  top.style.transition = `opacity ${easing}, filter ${easing}`;
+  bottom.style.transition = `opacity ${easing}, filter ${easing}`;
+  top.style.opacity = 0;
+  top.style.filter = 'blur(6px)';
+  bottom.style.opacity = 1;
+  bottom.style.filter = 'blur(0px)';
+  await sleep(dur);
+  top.style.filter = 'blur(0px)';
+  swapTopmost(id, a, b);
+}
+
+/* ---------- 06: wipe via clip-path ---------- */
+async function runWipe(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 1;
+  bottom.style.transform = 'none';
+  bottom.style.filter = 'none';
+  bottom.style.clipPath = 'inset(0 100% 0 0)';
+  void bottom.offsetHeight;
+
+  const easing = `${dur}ms cubic-bezier(0.65,0,0.35,1)`;
+  bottom.style.transition = `clip-path ${easing}`;
+  bottom.style.clipPath = 'inset(0 0% 0 0)';
+  await sleep(dur);
+  top.style.opacity = 0;
+  swapTopmost(id, a, b);
+  top.style.clipPath = 'none';
+}
+
+/* ---------- 07: line-by-line stagger ---------- */
+async function runStagger(id) {
+  const a = document.getElementById(`${id}-a`);
+  const b = document.getElementById(`${id}-b`);
+  const dur = getDuration();
+  const slide = nextSlideFor(id);
+  const [top, bottom] = topmost(a, b);
+
+  fillLayer(bottom, slide);
+  const bLines = bottom.querySelectorAll('.line');
+  const tLines = top.querySelectorAll('.line');
+  const stagger = 90;
+
+  bottom.style.transition = 'none';
+  bottom.style.opacity = 1;
+  bLines.forEach(l => {
+    l.style.transition = 'none';
+    l.style.opacity = 0;
+    l.style.transform = 'translateY(14px)';
+  });
+  void bottom.offsetHeight;
+
+  const easing = `${dur}ms cubic-bezier(0.22,0.61,0.36,1)`;
+  tLines.forEach((l, idx) => {
+    l.style.transition = `opacity ${easing}, transform ${easing}`;
+    setTimeout(() => {
+      l.style.opacity = 0;
+      l.style.transform = 'translateY(-10px)';
+    }, idx * stagger);
+  });
+  bLines.forEach((l, idx) => {
+    l.style.transition = `opacity ${easing}, transform ${easing}`;
+    setTimeout(() => {
+      l.style.opacity = 1;
+      l.style.transform = 'translateY(0px)';
+    }, idx * stagger);
+  });
+
+  await sleep(dur + (bLines.length - 1) * stagger);
+  tLines.forEach(l => { l.style.transform = 'translateY(0px)'; });
+  swapTopmost(id, a, b);
+}
+
+/* ---------- helpers to track which layer (a/b) is currently "top" (visible) per demo ---------- */
+const topState = {};
+function topmost(a, b) {
+  const key = a.id.split('-')[0];
+  if (!(key in topState)) topState[key] = 'a';
+  return topState[key] === 'a' ? [a, b] : [b, a];
+}
+function swapTopmost(id, a, b) {
+  topState[id] = topState[id] === 'a' ? 'b' : 'a';
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,930 @@
+import { convertFileSrc, emit, emitTo, invoke, listen } from "../shared/ipc";
+import { disableLogging, installGlobalLogging, logError, logInfo } from "../shared/logger";
+import {
+  EVENTS,
+  PREVIEW_CHANNEL,
+  type ClearPayload,
+  type MediaControlPayload,
+  type OverlayPayload,
+  type PreviewMessage,
+  type SetMediaPayload,
+  type SetStylePayload,
+  type SetTextPayload,
+  type VideoLoopPayload,
+  type VideoSeekPayload,
+} from "../shared/events";
+import {
+  mediaKindFromPath,
+  cleanSongLines,
+  defaultStyleConfig,
+  normalizeStyleConfig,
+  resolveStyleMediaPath,
+  type BibleCaptionPosition,
+  type StyleConfig,
+  type TransitionType,
+} from "../shared/style";
+
+const PERSISTENT_STORAGE_KEY = "chyguislide.persistentDisplay";
+
+const isPreviewFrame =
+  new URLSearchParams(window.location.search).get("preview") === "1";
+
+const layerBg = document.querySelector<HTMLElement>("#layer-bg")!;
+const layerOverlay = document.querySelector<HTMLElement>("#layer-overlay")!;
+const paneA = document.querySelector<HTMLElement>("#text-a")!;
+const paneB = document.querySelector<HTMLElement>("#text-b")!;
+
+let frontIsA = true;
+let currentMedia: HTMLVideoElement | HTMLImageElement | null = null;
+let activeStyle: StyleConfig = defaultStyleConfig();
+let lastPayload: SetTextPayload | null = null;
+let frontContent: HTMLElement | null = null;
+let currentBgPath: string | null = null;
+let intentionalVideoPause = false;
+// Медиа, запущенное из «Трансляции», приоритетнее фона стиля: повторное
+// применение стиля (например, ответ на display:ping) не должно его затирать.
+let broadcastMediaActive = false;
+
+function frontPane(): HTMLElement {
+  return frontIsA ? paneA : paneB;
+}
+
+function backPane(): HTMLElement {
+  return frontIsA ? paneB : paneA;
+}
+
+type BibleCaptionSpec =
+  | {
+      position: BibleCaptionPosition;
+      flow: boolean;
+      inline: boolean;
+      floating: boolean;
+    }
+  | null;
+
+function bibleCaptionSpec(payload: SetTextPayload): BibleCaptionSpec {
+  if (payload.mode !== "bible" || !payload.verseRef) {
+    return null;
+  }
+  if (!activeStyle.bibleCaptionEnabled) {
+    return null;
+  }
+  const position = activeStyle.bibleCaptionPosition;
+  const flow = position === "above" || position === "below";
+  const inline = position === "inline-start" || position === "inline-end";
+  return { position, flow, inline, floating: !flow && !inline };
+}
+
+function makeBibleCaption(position: BibleCaptionPosition, text: string): HTMLElement {
+  const el = document.createElement("span");
+  el.className = `bible-caption pos-${position}`;
+  el.textContent = text;
+  return el;
+}
+
+function pxOf(value: string): number {
+  return Number.parseFloat(value) || 0;
+}
+
+/**
+ * Auto-fit: подбирает максимальный font-size, при котором текст заполняет
+ * панель по ширине и высоте без прокрутки. Стартовый размер — от высоты окна
+ * (window.innerHeight * 0.15), затем плавная доводка по фактическому контенту.
+ * Одна и та же логика работает и в реальном окне Display, и в превью-iframe.
+ */
+const AUTOFIT_BASE_PX = 100;
+const AUTOFIT_START_RATIO = 0.15;
+
+function fitNow(pane: HTMLElement, content: HTMLElement) {
+  if (!content.isConnected) {
+    return;
+  }
+  if (pane.clientWidth <= 0 || pane.clientHeight <= 0) {
+    // Панель ещё не отрендерена — автофит повторит ResizeObserver/load.
+    return;
+  }
+  const paneStyle = window.getComputedStyle(pane);
+  const availW = Math.max(
+    1,
+    pane.clientWidth - pxOf(paneStyle.paddingLeft) - pxOf(paneStyle.paddingRight),
+  );
+  const availH = Math.max(
+    1,
+    pane.clientHeight - pxOf(paneStyle.paddingTop) - pxOf(paneStyle.paddingBottom),
+  );
+  const overflows = () =>
+    content.scrollWidth > availW + 1 || content.scrollHeight > availH + 1;
+
+  // Стартовый размер — от высоты окна (15% высоты).
+  let fontSize = Math.max(12, Math.round(window.innerHeight * AUTOFIT_START_RATIO));
+
+  // Линейная доводка: измеряем контент при базовом шрифте и масштабируем.
+  content.style.fontSize = `${AUTOFIT_BASE_PX}px`;
+  const baseH = content.scrollHeight;
+  const baseW = content.scrollWidth;
+  if (baseH > 0) {
+    const scaleH = (availH * 0.98) / baseH;
+    const scaleW = baseW > availW ? (availW * 0.98) / baseW : Number.POSITIVE_INFINITY;
+    const scale = Math.min(scaleH, scaleW);
+    if (Number.isFinite(scale) && scale > 0) {
+      fontSize = AUTOFIT_BASE_PX * scale;
+    }
+  }
+  fontSize = Math.min(Math.max(fontSize, 10), 480);
+  content.style.fontSize = `${fontSize}px`;
+
+  // Плавная доводка: вниз — страховка от округлений layout-прохода.
+  for (let guard = 0; overflows() && guard < 60; guard += 1) {
+    const next = Math.max(9, fontSize * 0.96);
+    if (next === fontSize) {
+      break;
+    }
+    fontSize = next;
+    content.style.fontSize = `${fontSize}px`;
+  }
+  // …и вверх — добиваемся максимального заполнения панели.
+  for (let guard = 0; guard < 40; guard += 1) {
+    const next = fontSize * 1.03;
+    if (next > 480) {
+      break;
+    }
+    content.style.fontSize = `${next}px`;
+    if (overflows()) {
+      content.style.fontSize = `${fontSize}px`;
+      break;
+    }
+    fontSize = next;
+  }
+  content.style.fontSize = `${fontSize}px`;
+}
+
+/** Автофит запускается только после полной загрузки окна (window.load). */
+let windowLoaded = document.readyState === "complete";
+if (!windowLoaded) {
+  window.addEventListener(
+    "load",
+    () => {
+      windowLoaded = true;
+      if (frontContent && frontContent.isConnected) {
+        fitNow(frontPane(), frontContent);
+      }
+    },
+    { once: true },
+  );
+}
+
+function scheduleAutofit(pane: HTMLElement, content: HTMLElement) {
+  const run = () => {
+    if (windowLoaded && content.isConnected) {
+      fitNow(pane, content);
+    }
+  };
+  // Двойной rAF + таймер — layout обязан устояться после вставки контента.
+  window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+  window.setTimeout(run, 60);
+  // После загрузки шрифтов — пересчёт (метрики могли измениться).
+  if (document.fonts?.ready) {
+    void document.fonts.ready
+      .then(() => run())
+      .catch(() => undefined);
+  }
+}
+
+// Реакция на любые изменения размера панели (окно, превью-iframe, монитор).
+const paneResizeObserver = new ResizeObserver(() => {
+  if (windowLoaded && frontContent && frontContent.isConnected) {
+    fitNow(frontPane(), frontContent);
+  }
+});
+paneResizeObserver.observe(paneA);
+paneResizeObserver.observe(paneB);
+
+function renderText(pane: HTMLElement, payload: SetTextPayload): HTMLElement {
+  pane.replaceChildren();
+
+  // Для песен — жёсткая фильтрация: только строчки текста, без заголовков
+  // («Куплет N», «Припев», «Хор», «Bridge») и без шапки с названием песни.
+  const lines =
+    payload.mode === "song" ? cleanSongLines(payload.lines, payload.title) : payload.lines;
+  // Заголовки (название песни/объявления) — служебные и на экран не выводятся никогда.
+  const bodyPayload: SetTextPayload = { ...payload, title: undefined, lines };
+
+  const caption = bibleCaptionSpec(bodyPayload);
+  const captionEl =
+    caption && bodyPayload.verseRef
+      ? makeBibleCaption(caption.position, bodyPayload.verseRef)
+      : null;
+
+  const content = document.createElement("div");
+  content.className = "slide-content";
+
+  if (bodyPayload.title) {
+    const title = document.createElement("div");
+    title.className = "slide-title";
+    title.textContent = bodyPayload.title;
+    content.appendChild(title);
+  } else if (captionEl && caption && caption.flow && caption.position === "above") {
+    content.appendChild(captionEl);
+  }
+
+  const body = document.createElement("div");
+  body.className = "slide-body";
+  const rows = bodyPayload.lines
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const row = document.createElement("div");
+      row.textContent = line;
+      return row;
+    });
+
+  if (captionEl && caption && caption.inline) {
+    if (caption.position === "inline-start" && rows[0]) {
+      rows[0].prepend(captionEl);
+    } else if (caption.position === "inline-end" && rows[rows.length - 1]) {
+      rows[rows.length - 1].appendChild(captionEl);
+    }
+  }
+
+  for (const row of rows) {
+    body.appendChild(row);
+  }
+  content.appendChild(body);
+
+  if (captionEl && caption && caption.flow && caption.position === "below") {
+    content.appendChild(captionEl);
+  }
+
+  pane.appendChild(content);
+
+  if (captionEl && caption && caption.floating) {
+    // Прибитые к краям экрана подписи — вне потока, поверх текста.
+    pane.appendChild(captionEl);
+  }
+
+  scheduleAutofit(pane, content);
+  return content;
+}
+
+/* ——— JS-анимации переходов. Портировано 1:1 из slide-transitions-demo.html. ——— */
+
+let transitionSeq = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Снять inline-стили анимации на панели И строках — к чистому CSS-состоянию. */
+function clearPaneAnimationStyles(pane: HTMLElement) {
+  pane.style.removeProperty("opacity");
+  pane.style.removeProperty("transform");
+  pane.style.removeProperty("filter");
+  pane.style.removeProperty("clip-path");
+  pane.style.removeProperty("transition");
+  // Строки: после построчного перехода уходящие линии остаются с inline
+  // opacity:0/transform — сбрасываем, иначе следующий переход «не увидит» слайд.
+  for (const line of slideRows(pane)) {
+    line.style.removeProperty("opacity");
+    line.style.removeProperty("transform");
+    line.style.removeProperty("transition");
+  }
+}
+
+/** Строки текста слайда — в демо это .line, у нас строки .slide-body. */
+function slideRows(pane: HTMLElement): HTMLElement[] {
+  return Array.from(pane.querySelectorAll<HTMLElement>(".slide-body > div"));
+}
+
+/**
+ * Двухслойные переходы: next — панель с новым текстом (класс .visible уже
+ * выставлен), prev — уходящая панель. seq — номер вызова setText: если пришёл
+ * более новый вызов, анимация прекращается и не трогает панели, чтобы не
+ * затереть его состояние.
+ */
+async function animateTransition(
+  kind: Exclude<TransitionType, "none">,
+  next: HTMLElement,
+  prev: HTMLElement,
+  ms: number,
+  seq: number,
+) {
+  const dur = Math.max(16, ms);
+  const active = () => seq === transitionSeq;
+
+  clearPaneAnimationStyles(next);
+  clearPaneAnimationStyles(prev);
+  next.style.transition = "none";
+  prev.style.transition = "none";
+  next.style.opacity = "0";
+  next.style.transform = "none";
+  next.style.filter = "none";
+  next.style.clipPath = "none";
+  prev.style.transform = "none";
+  prev.style.filter = "none";
+  prev.style.clipPath = "none";
+
+  // 01: fade — затемнение, смена, проявление (как runFade из демо).
+  if (kind === "fade") {
+    prev.style.opacity = "1";
+    void next.offsetHeight; // force layout
+    const easing = `${dur / 2}ms ease-in-out`;
+    prev.style.transition = `opacity ${easing}`;
+    prev.style.opacity = "0";
+    await sleep(dur / 2);
+    if (!active()) return;
+    next.style.transition = `opacity ${easing}`;
+    next.style.opacity = "1";
+    await sleep(dur / 2);
+    if (!active()) return;
+    clearPaneAnimationStyles(next);
+    clearPaneAnimationStyles(prev);
+    return;
+  }
+
+  // 07: построчное появление — строки уходящего слайда уходят, нового — въезжают.
+  if (kind === "stagger") {
+    const showLines = slideRows(next);
+    const hideLines = slideRows(prev);
+    const stagger = 90;
+    if (showLines.length > 0 && hideLines.length > 0) {
+      next.style.opacity = "1";
+      prev.style.opacity = "1";
+      const ease = `${dur}ms cubic-bezier(0.22,0.61,0.36,1)`;
+      for (const line of showLines) {
+        line.style.transition = "none";
+        line.style.opacity = "0";
+        line.style.transform = "translateY(14px)";
+      }
+      void next.offsetHeight; // force layout — зафиксировать стартовые состояния строк
+      showLines.forEach((l, idx) => {
+        l.style.transition = `opacity ${ease}, transform ${ease}`;
+        window.setTimeout(() => {
+          if (active()) {
+            l.style.opacity = "1";
+            l.style.transform = "translateY(0px)";
+          }
+        }, idx * stagger);
+      });
+      hideLines.forEach((l, idx) => {
+        l.style.transition = `opacity ${ease}, transform ${ease}`;
+        window.setTimeout(() => {
+          if (active()) {
+            l.style.opacity = "0";
+            l.style.transform = "translateY(-10px)";
+          }
+        }, idx * stagger);
+      });
+      await sleep(dur + (showLines.length - 1) * stagger);
+      if (!active()) {
+        return;
+      }
+      // Как в демо: возвращаем строки уходящего слайда на место.
+      hideLines.forEach((l) => {
+        l.style.transform = "translateY(0px)";
+      });
+      clearPaneAnimationStyles(next);
+      clearPaneAnimationStyles(prev);
+      return;
+    }
+    // Строк нет — строчную анимацию делать нечем, работаем как crossfade.
+  }
+
+  if (kind === "crossfade" || kind === "stagger") {
+    // 02: crossfade — два слоя идут навстречу (как runCrossfade из демо).
+    prev.style.opacity = "1";
+    void next.offsetHeight; // force layout
+    const e = `opacity ${dur}ms cubic-bezier(0.4,0,0.2,1)`;
+    next.style.transition = e;
+    prev.style.transition = e;
+    next.style.opacity = "1";
+    prev.style.opacity = "0";
+  } else if (kind === "fade-slide") {
+    // 03: fade + slide — новый «подъезжает» снизу, старый уходит вверх (как runFadeSlide).
+    next.style.transform = "translateY(18px)";
+    prev.style.opacity = "1";
+    void next.offsetHeight; // force layout
+    const e = `opacity ${dur}ms cubic-bezier(0.22,0.61,0.36,1), transform ${dur}ms cubic-bezier(0.22,0.61,0.36,1)`;
+    next.style.transition = e;
+    prev.style.transition = e;
+    next.style.opacity = "1";
+    next.style.transform = "translateY(0px)";
+    prev.style.opacity = "0";
+    prev.style.transform = "translateY(-14px)";
+  } else {
+    // 05: blur → фокус — новый проявляется из размытия (как runBlur).
+    next.style.filter = "blur(10px)";
+    prev.style.opacity = "1";
+    void next.offsetHeight; // force layout
+    const e = `opacity ${dur}ms ease-out, filter ${dur}ms ease-out`;
+    next.style.transition = e;
+    prev.style.transition = e;
+    next.style.opacity = "1";
+    next.style.filter = "blur(0px)";
+    prev.style.opacity = "0";
+    prev.style.filter = "blur(6px)";
+  }
+
+  await sleep(dur);
+  if (!active()) {
+    return;
+  }
+  clearPaneAnimationStyles(next);
+  clearPaneAnimationStyles(prev);
+}
+
+function setText(payload: SetTextPayload) {
+  const next = backPane();
+  const prev = frontPane();
+  const content = renderText(next, payload);
+  const seq = ++transitionSeq;
+  const kind = activeStyle.transitionType;
+  const ms = Math.max(0, Number(activeStyle.transitionMs) || 0);
+
+  // Снять inline-стили возможной предыдущей JS-анимации.
+  clearPaneAnimationStyles(next);
+  clearPaneAnimationStyles(prev);
+
+  next.classList.add("visible");
+  prev.classList.remove("visible");
+  frontIsA = !frontIsA;
+  lastPayload = payload;
+  frontContent = content;
+
+  // Все анимации (включая «fade») выполняются JS-функциями, портированными 1:1 из демо.
+  if (kind !== "none" && ms > 0) {
+    void animateTransition(kind, next, prev, ms, seq);
+  }
+}
+
+function clearText() {
+  const prev = frontPane();
+  prev.classList.remove("visible");
+  lastPayload = null;
+  frontContent = null;
+}
+
+function destroyMedia() {
+  broadcastMediaActive = false;
+  if (!currentMedia) {
+    return;
+  }
+  if (currentMedia instanceof HTMLVideoElement) {
+    currentMedia.pause();
+    currentMedia.removeAttribute("src");
+    currentMedia.load();
+  }
+  currentMedia.remove();
+  currentMedia = null;
+  currentBgPath = null;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+  if (!m) {
+    return `rgba(0, 0, 0, ${Math.min(1, Math.max(0, alpha))})`;
+  }
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r}, ${g}, ${b}, ${Math.min(1, Math.max(0, alpha))})`;
+}
+
+/** Multi-directional text-shadow contour (thin "outline" glow). */
+function strokeShadows(cfg: Partial<StyleConfig>): string {
+  const width = Math.max(0, Number(cfg.strokeWidth) || 0);
+  if (width <= 0) {
+    return "none";
+  }
+  const color = hexToRgba(cfg.strokeColor || "#000000", Number(cfg.strokeOpacity ?? 0.65));
+  const step = Math.max(1, Math.round(width / 2));
+  const n = Math.max(1, Math.round(width));
+  const shadows: string[] = [];
+  for (let dx = -n; dx <= n; dx += 1) {
+    for (let dy = -n; dy <= n; dy += 1) {
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      shadows.push(`${dx * step}px ${dy * step}px 0 ${color}`);
+    }
+  }
+  return shadows.join(", ");
+}
+
+/** Set text / transition / background from the active presentation style. */
+function applyStyleToDisplay(cfgIn: SetStylePayload) {
+  const cfg = normalizeStyleConfig(cfgIn);
+  activeStyle = cfg;
+  const root = document.documentElement;
+  const transitionMs = Math.max(0, Number(cfg.transitionMs) || 0);
+
+  root.style.setProperty("--sl-text-color", cfg.textColor);
+  root.style.setProperty("--sl-font-family", `"${cfg.fontFamily}", sans-serif`);
+  root.style.setProperty("--sl-font-weight", cfg.bold ? "700" : "400");
+  root.style.setProperty("--sl-align", cfg.align);
+  root.style.setProperty("--sl-ms", `${transitionMs}ms`);
+
+  if (Number(cfg.strokeWidth) > 0) {
+    const color = hexToRgba(cfg.strokeColor, Number(cfg.strokeOpacity) || 0);
+    root.style.setProperty("--sl-stroke", `${cfg.strokeWidth}px ${color}`);
+    root.style.setProperty("--sl-text-shadow", strokeShadows(cfg));
+  } else {
+    root.style.setProperty("--sl-stroke", "none");
+    root.style.setProperty("--sl-text-shadow", "none");
+  }
+
+  // Все анимации переходов выполняет JS (см. setText) — CSS-переход панели выключаем.
+  root.style.setProperty("--sl-transition", "none");
+
+  applyStyleBackground(cfg);
+
+  // Смена шрифта/выравнивания/подписи — перерисовать текущий слайд с автофитом.
+  if (lastPayload) {
+    frontContent = renderText(frontPane(), lastPayload);
+  }
+}
+
+function applyStyleBackground(cfg: SetStylePayload) {
+  const mediaMode = cfg.backgroundMode === "media" || cfg.backgroundMode === "random";
+  const path = mediaMode ? resolveStyleMediaPath(cfg) : null;
+
+  // Пока на экране медиа из «Трансляции», фон стиля не должен его перебивать.
+  // Запоминаем желаемый путь: он применится, когда показ медиа закончится
+  // (контроллер пришлёт display:set-media {kind:"none"}, затем стиль заново).
+  if (broadcastMediaActive) {
+    currentBgPath = path;
+    return;
+  }
+
+  // Only update background if it actually changed (prevents flickering)
+  if (path === currentBgPath && (path !== null) === (currentBgPath !== null)) {
+    return;
+  }
+
+  currentBgPath = path;
+
+  if (!mediaMode || !path) {
+    if (currentMedia) {
+      destroyMedia();
+    }
+    layerBg.style.removeProperty("backgroundImage");
+    layerBg.style.background = cfg.backgroundColor;
+    fadeBg(true);
+    return;
+  }
+  layerBg.style.removeProperty("background");
+  setMedia({ kind: mediaKindFromPath(path), path }, "style");
+}
+
+function parseStyleRow(row: unknown): StyleConfig | null {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  const r = row as Record<string, unknown>;
+  const raw = (r.configJson ?? r.config_json ?? "{}") as string;
+  try {
+    return normalizeStyleConfig(JSON.parse(raw) as Partial<StyleConfig>);
+  } catch {
+    return null;
+  }
+}
+
+/** Real Display pulls the active style from the DB on boot and re-announce. */
+async function applyActiveStyleFromBackend() {
+  try {
+    const row: unknown = await invoke("get_active_style");
+    const cfg = parseStyleRow(row);
+    if (cfg) {
+      console.log("[display] applying active style");
+      applyStyleToDisplay(cfg);
+    }
+  } catch (err) {
+    console.warn("[display] apply active style failed", err);
+  }
+}
+
+function reportMediaStatus() {
+  if (isPreviewFrame || !(currentMedia instanceof HTMLVideoElement)) {
+    return;
+  }
+  void emit(EVENTS.mediaStatus, {
+    currentTime: currentMedia.currentTime,
+    duration: Number.isFinite(currentMedia.duration) ? currentMedia.duration : 0,
+    paused: currentMedia.paused,
+  });
+}
+
+function fadeBg(visible: boolean) {
+  layerBg.style.display = visible ? "block" : "none";
+  layerBg.classList.toggle("visible", visible);
+}
+
+/** Источник медиа: явный показ из «Трансляции» или фон активного стиля. */
+type MediaOrigin = "style" | "broadcast";
+
+/**
+ * Ставит медиа в фоновый слой. Медиа из «Трансляции» (origin: "broadcast")
+ * помечается как приоритетное, чтобы последующее применение стиля не вернуло
+ * фон вместо него.
+ */
+function setMedia(payload: SetMediaPayload, origin: MediaOrigin = "broadcast") {
+  destroyMedia();
+  fadeBg(false);
+
+  if (payload.kind === "none" || !payload.path) {
+    // destroyMedia() уже сбросил broadcastMediaActive — фоном снова управляет стиль.
+    return;
+  }
+
+  if (origin === "broadcast") {
+    broadcastMediaActive = true;
+  }
+
+  // Keep the filesystem path raw; convertFileSrc performs the required URL encoding
+  // for spaces and non-ASCII characters before creating the asset URL.
+  const src = convertFileSrc(payload.path);
+  if (payload.kind === "video") {
+    const video = document.createElement("video");
+    video.src = src;
+    video.autoplay = true;
+    video.loop = true;
+    video.setAttribute("loop", "");
+    video.playsInline = true;
+    video.muted = isPreviewFrame;
+    layerBg.appendChild(video);
+    currentMedia = video;
+    video.addEventListener("play", () => {
+      console.log("[display] background video play");
+    });
+    video.addEventListener("ended", () => {
+      console.log("[display] background video ended; restarting");
+      void video.play().catch(() => undefined);
+    });
+    video.addEventListener("stalled", () => {
+      console.log("[display] background video stalled; restarting");
+      void video.play().catch(() => undefined);
+    });
+    video.addEventListener("pause", () => {
+      console.log("[display] background video pause", {
+        intentional: intentionalVideoPause,
+      });
+      if (!intentionalVideoPause) {
+        void video.play().catch(() => undefined);
+      }
+    });
+    video.addEventListener("error", (event) => {
+      const error = (event.target as HTMLVideoElement | null)?.error;
+      console.error("[display] background video error", {
+        code: error?.code,
+        message: error?.message,
+      });
+    });
+    video.addEventListener("loadeddata", () => fadeBg(true), { once: true });
+    if (!isPreviewFrame) {
+      video.addEventListener("timeupdate", reportMediaStatus);
+    }
+    void video.play().catch(() => undefined);
+  } else {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "";
+    layerBg.appendChild(img);
+    currentMedia = img;
+    img.addEventListener("load", () => fadeBg(true), { once: true });
+  }
+}
+
+function seekVideo(payload: VideoSeekPayload) {
+  if (currentMedia instanceof HTMLVideoElement && Number.isFinite(payload.time)) {
+    currentMedia.currentTime = Math.max(0, payload.time);
+  }
+}
+
+function setVideoLoop(payload: VideoLoopPayload) {
+  if (currentMedia instanceof HTMLVideoElement) {
+    currentMedia.loop = Boolean(payload.loop);
+  }
+}
+
+function controlMedia(payload: MediaControlPayload) {
+  const video = currentMedia instanceof HTMLVideoElement ? currentMedia : null;
+
+  switch (payload.action) {
+    case "play":
+      void video?.play();
+      break;
+    case "pause":
+      if (video) {
+        intentionalVideoPause = true;
+        video.pause();
+        intentionalVideoPause = false;
+      }
+      break;
+    case "seek":
+      if (video && payload.value != null) {
+        video.currentTime = payload.value;
+      }
+      break;
+    case "volume":
+      if (video && payload.value != null) {
+        video.volume = Math.min(1, Math.max(0, payload.value));
+      }
+      break;
+    case "fade-out": {
+      fadeBg(false);
+      const node = currentMedia;
+      const done = () => {
+        layerBg.removeEventListener("transitionend", done);
+        if (currentMedia === node) {
+          destroyMedia();
+        }
+      };
+      layerBg.addEventListener("transitionend", done);
+      window.setTimeout(done, 400);
+      break;
+    }
+  }
+}
+
+function setOverlay(payload: OverlayPayload) {
+  layerOverlay.style.opacity = String(Math.min(1, Math.max(0, payload.opacity)));
+}
+
+function handleClear(payload?: ClearPayload | null) {
+  if (payload?.textOnly) {
+    clearText();
+    return;
+  }
+  clearAllDisplayContent();
+}
+
+function handlePreviewMessage(data: PreviewMessage) {
+  if (!data || data.channel !== PREVIEW_CHANNEL) {
+    return;
+  }
+  switch (data.type) {
+    case EVENTS.setText:
+      setText(data.payload);
+      break;
+    case EVENTS.clear:
+      handleClear(data.payload);
+      break;
+    case EVENTS.setMedia:
+      setMedia(data.payload);
+      break;
+    case EVENTS.mediaControl:
+      controlMedia(data.payload);
+      break;
+    case EVENTS.videoSeek:
+      seekVideo(data.payload);
+      break;
+    case EVENTS.videoSetLoop:
+      setVideoLoop(data.payload);
+      break;
+    case EVENTS.setOverlay:
+      setOverlay(data.payload);
+      break;
+    case EVENTS.setStyle:
+      applyStyleToDisplay(normalizeStyleConfig(data.payload));
+      break;
+  }
+}
+
+function clearAllDisplayContent() {
+  clearText();
+  destroyMedia();
+  layerBg.style.display = "none";
+  layerOverlay.style.opacity = "0";
+}
+
+function isPersistentBackground(): boolean {
+  try {
+    return localStorage.getItem(PERSISTENT_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+async function emergencyEscape() {
+  if (isPersistentBackground()) {
+    // Постоянный фон: убираем только текст, медиа продолжает играть.
+    clearText();
+    return;
+  }
+  clearAllDisplayContent();
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().close();
+  } catch {
+    // ignore
+  }
+}
+
+async function announceReady(reason: string) {
+  console.log(`[display] announce ready (${reason})`);
+  try {
+    await emit(EVENTS.displayReady, { reason });
+    // Явно в controller — на случай если глобальный emit не дойдёт.
+    await emitTo("controller", EVENTS.displayReady, { reason });
+    console.log("[display] display:ready emitted");
+  } catch (err) {
+    console.error("[display] failed to emit display:ready", err);
+    logError("display", "не удалось отправить display:ready", { error: String(err) });
+  }
+}
+
+async function boot() {
+  if (isPreviewFrame) {
+    // Превью-iframe общается через postMessage — в файловый журнал не пишем.
+    disableLogging();
+  } else {
+    installGlobalLogging("display");
+    logInfo("display", "запуск окна вывода", { href: window.location.href });
+  }
+
+  window.addEventListener("message", (event) => {
+    handlePreviewMessage(event.data as PreviewMessage);
+  });
+
+  // Автоподбор размера при изменении размеров окна/превью.
+  let fitResizeTimer = 0;
+  window.addEventListener(
+    "resize",
+    () => {
+      window.clearTimeout(fitResizeTimer);
+      fitResizeTimer = window.setTimeout(() => {
+        if (frontContent && frontContent.isConnected) {
+          fitNow(frontPane(), frontContent);
+        }
+      }, 150);
+    },
+    { passive: true },
+  );
+
+  // Preview iframe must NOT subscribe to Tauri events — only the real Display window does.
+  if (isPreviewFrame) {
+    document.documentElement.classList.add("preview-frame");
+    console.log("[display] preview frame — skip Tauri listeners");
+    return;
+  }
+  logInfo("display", "регистрация слушателей Tauri");
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void emergencyEscape();
+  });
+
+  console.log("[display] registering Tauri listeners…");
+  await listen<SetTextPayload>(EVENTS.setText, (event) => {
+    console.log("[display] ← set-text", event.payload);
+    setText(event.payload);
+  });
+  await listen<ClearPayload | null>(EVENTS.clear, (event) => {
+    console.log("[display] ← clear", event.payload);
+    handleClear(event.payload);
+  });
+  await listen<SetMediaPayload>(EVENTS.setMedia, (event) => {
+    console.log("[display] ← set-media", event.payload);
+    setMedia(event.payload);
+  });
+  await listen<MediaControlPayload>(EVENTS.mediaControl, (event) => {
+    console.log("[display] ← media-control", event.payload);
+    controlMedia(event.payload);
+  });
+  await listen<VideoSeekPayload>(EVENTS.videoSeek, (event) => {
+    console.log("[display] ← video:seek", event.payload);
+    seekVideo(event.payload);
+  });
+  await listen<VideoLoopPayload>(EVENTS.videoSetLoop, (event) => {
+    console.log("[display] ← video:set-loop", event.payload);
+    setVideoLoop(event.payload);
+  });
+  await listen<OverlayPayload>(EVENTS.setOverlay, (event) => {
+    console.log("[display] ← set-overlay", event.payload);
+    setOverlay(event.payload);
+  });
+  await listen<SetStylePayload>(EVENTS.setStyle, (event) => {
+    console.log("[display] ← set-style", event.payload);
+    applyStyleToDisplay(normalizeStyleConfig(event.payload));
+  });
+  await listen(EVENTS.displayPing, () => {
+    console.log("[display] ← ping");
+    // Переприменение стиля безопасно: пока идёт показ медиа из «Трансляции»,
+    // applyStyleBackground не трогает медиа-слой (см. broadcastMediaActive).
+    void applyActiveStyleFromBackend();
+    void announceReady("ping");
+  });
+
+  // Apply persisted active style before announcing readiness.
+  await applyActiveStyleFromBackend();
+  await announceReady("boot");
+  logInfo("display", "окно вывода готово к приёму команд");
+}
+
+void boot().catch((error) => {
+  logError("display", "критическая ошибка окна вывода", error);
+});
