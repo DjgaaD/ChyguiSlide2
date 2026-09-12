@@ -60,6 +60,7 @@ $webUrl = "https://github.com/$repoFull"
 $rawBase = "https://raw.githubusercontent.com/$repoFull/$Branch"
 $marker = '<!-- CHYGUISLIDE-UPDATE -->'
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $releaseDir = Join-Path $root 'release'
@@ -359,34 +360,39 @@ if ($SkipRelease) {
     }
 } else {
     Write-Host "[3/6] Релиз $tag"
+    $installLine = "& ([scriptblock]::Create((irm '$rawBase/install.ps1').TrimStart([char]0xFEFF)))"
+    $body = @(
+        $notesText,
+        '',
+        '**Установка на новый компьютер.** Откройте PowerShell и выполните строку:',
+        '',
+        '```powershell',
+        $installLine,
+        '```',
+        '',
+        'Установщик не подписан сертификатом, поэтому Windows может показать',
+        'предупреждение SmartScreen: «Подробнее» → «Выполнить в любом случае».',
+        '',
+        "SHA-256 файла обновления: ``$sha256``",
+        '',
+        'Машинночитаемое описание версии — в [Update.md](Update.md).'
+    ) -join "`r`n"
+    $bodyFile = Join-Path $env:TEMP 'chyguislide-release-notes.txt'
+    # Без BOM: текст уходит в описание релиза как есть, и BOM там был бы лишним
+    # невидимым символом в начале страницы.
+    [System.IO.File]::WriteAllText($bodyFile, $body, $utf8NoBom)
+
     $view = Invoke-Gh -Arguments @('release', 'view', $tag, '-R', $repoFull, '--json', 'tagName') -AllowFailure
     if ($view.Code -eq 0) {
-        Write-Host "      релиз $tag уже есть — дополняем его"
+        Write-Host "      релиз $tag уже есть — обновляем описание"
+        Invoke-Gh -Arguments @('release', 'edit', $tag, '-R', $repoFull,
+            '--title', "ChyguiSlide $Version", '--notes-file', $bodyFile) | Out-Null
     } else {
-        $installLine = "& ([scriptblock]::Create((irm '$rawBase/install.ps1').TrimStart([char]0xFEFF)))"
-        $body = @(
-            $notesText,
-            '',
-            '**Установка на новый компьютер.** Откройте PowerShell и выполните строку:',
-            '',
-            '```powershell',
-            $installLine,
-            '```',
-            '',
-            'Установщик не подписан сертификатом, поэтому Windows может показать',
-            'предупреждение SmartScreen: «Подробнее» → «Выполнить в любом случае».',
-            '',
-            "SHA-256 файла обновления: ``$sha256``",
-            '',
-            'Машинночитаемое описание версии — в [Update.md](Update.md).'
-        ) -join "`r`n"
-        $bodyFile = Join-Path $env:TEMP 'chyguislide-release-notes.txt'
-        [System.IO.File]::WriteAllText($bodyFile, $body, $utf8Bom)
         Invoke-Gh -Arguments @('release', 'create', $tag, '-R', $repoFull,
             '--title', "ChyguiSlide $Version", '--notes-file', $bodyFile) | Out-Null
-        Remove-Item $bodyFile -Force -ErrorAction SilentlyContinue
         Write-Host "      релиз $tag создан"
     }
+    Remove-Item $bodyFile -Force -ErrorAction SilentlyContinue
 
     # Файлы, уже загруженные в релиз с тем же размером, не загружаем снова: так
     # повторный запуск после сбоя не тратит трафик.
