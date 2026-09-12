@@ -228,6 +228,14 @@ textarea {
   letter-spacing: 0;
 }
 
+.label-note {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -489,6 +497,13 @@ textarea {
   background: var(--item-selected);
 }
 
+/* Стихи, добавленные к выделению через Ctrl+клик: полоса слева отличает их
+   от «якорного» стиха, который показывается первым. */
+.slide-item.multi-selected {
+  background: var(--item-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .slide-label {
   font-size: 13px;
   color: var(--muted);
@@ -649,6 +664,11 @@ textarea {
   color: var(--muted);
   line-height: 1.5;
   font-size: 14px;
+}
+
+/* Ошибки в подсказках настроек (Яндекс.Диск, обновление и т. п.). */
+.hint.error {
+  color: #e05252;
 }
 
 .item-list,
@@ -1826,6 +1846,203 @@ textarea {
   }
 
   .style-fields {
+    grid-column: auto;
+  }
+}
+
+/* ——— Резервные копии ——— */
+.backup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.backup-actions .show-btn,
+.backup-actions .tool-btn {
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  justify-content: center;
+  border-radius: 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.backup-actions .tool-btn {
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.backup-actions .tool-btn:hover {
+  background: var(--item-hover);
+}
+
+/* Ссылки в подсказках настроек: цвет темы вместо браузерного синего. */
+.settings-block a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-block a:hover {
+  color: var(--nav-active);
+}
+
+/* Настройки Яндекс.Диска живут под спойлером: на виду остаются только действия. */
+.settings-spoiler {
+  /* `block`, а не `flex` из `.settings-block`: так спойлер сворачивается штатно. */
+  display: block;
+  padding: 0;
+}
+
+.settings-spoiler-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.settings-spoiler-head::-webkit-details-marker {
+  display: none;
+}
+
+.settings-spoiler-head .hint {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-spoiler-head::after {
+  content: "▾";
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.settings-spoiler[open] .settings-spoiler-head::after {
+  transform: rotate(180deg);
+}
+
+.settings-spoiler-head:hover .settings-title {
+  color: var(--accent);
+}
+
+.settings-spoiler-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+/* Форма настроек: поля в две колонки, кнопки действий — под своими полями. */
+.yandex-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+
+.yandex-form .yandex-wide {
+  grid-column: 1 / -1;
+}
+
+.yandex-form .yandex-btn {
+  width: 100%;
+  height: 32px;
+  justify-content: center;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.yandex-form .yandex-btn:hover {
+  background: var(--item-hover);
+}
+
+.yandex-form .yandex-btn.yandex-wide {
+  height: 40px;
+  font-size: 14px;
+}
+
+.yandex-form .show-btn {
+  margin-top: 0;
+  height: 40px;
+  border-radius: 2px;
+  font-size: 15px;
+}
+
+/* Вывод слов в OBS: подложка, порт и адрес источника «Браузер». */
+.obs-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: end;
+}
+
+.obs-form .editor-field {
+  flex: 0 1 180px;
+}
+
+.obs-form .show-btn {
+  flex: 0 0 auto;
+  margin-top: 0;
+  height: 32px;
+  border-radius: 2px;
+  font-size: 14px;
+}
+
+.obs-url-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.obs-url-row .editor-field {
+  flex: 1 1 auto;
+}
+
+.obs-url-row .tool-btn {
+  height: 32px;
+  padding: 0 12px;
+  justify-content: center;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.obs-url-row .tool-btn:hover {
+  background: var(--item-hover);
+}
+
+/* `?w=1920&h=1080` и `?backdrop=0.4` в подсказке — читаемым моношрифтом. */
+.settings-block code {
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--item-hover);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .yandex-form {
+    grid-template-columns: 1fr;
+  }
+
+  .yandex-form .yandex-wide {
     grid-column: auto;
   }
 }

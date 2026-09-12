@@ -53,6 +53,11 @@ Add-Type -AssemblyName System.IO.Compression | Out-Null
 
 $apiUrl = 'https://api.gitverse.ru'
 $webUrl = 'https://gitverse.ru'
+# $webUrl — только хост: адрес репозитория и базовый адрес файлов в ветке
+# собираются из него один раз, чтобы ссылки в тексте релиза и в проверках
+# скачивания не расходились.
+$repoUrl = '{0}/{1}/{2}' -f $webUrl, $Owner, $Repo
+$contentBase = '{0}/content/{1}' -f $repoUrl, $Branch
 $accept = 'application/vnd.gitverse.object+json;version=1'
 $marker = '<!-- CHYGUISLIDE-UPDATE -->'
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -285,7 +290,7 @@ $Notes
 Установка на новый компьютер — одной строкой в PowerShell: скрипт скачает
 части, сверит SHA-256 и запустит установщик.
 
-  & ([scriptblock]::Create((irm '$webUrl/$Owner/$Repo/content/$Branch/install.ps1?raw=1').TrimStart([char]0xFEFF)))
+  & ([scriptblock]::Create((irm '$contentBase/install.ps1?raw=1').TrimStart([char]0xFEFF)))
 "@
 
 $release = $null
@@ -424,7 +429,7 @@ Write-Host '[6/6] Проверка анонимного доступа'
 if ($SkipDocs) {
     Write-Host '      проверка файлов репозитория пропущена (-SkipDocs)'
 } else {
-    $updateUrl = "$webUrl/$Owner/$Repo/content/$Branch/Update.md?raw=1"
+    $updateUrl = "$contentBase/Update.md?raw=1"
     $updateResponse = Invoke-WebRequest -UseBasicParsing -Uri $updateUrl -TimeoutSec 60
     if (-not $updateResponse.Content.Contains($marker)) {
         throw "Update.md по адресу $updateUrl скачивается, но без маркера $marker."
@@ -437,14 +442,14 @@ if ($SkipDocs) {
     }
     Write-Host "      Update.md: $updateUrl — версия $Version и ссылки на месте"
 
-    $readmeUrl = "$webUrl/$Owner/$Repo/content/$Branch/README.md?raw=1"
+    $readmeUrl = "$contentBase/README.md?raw=1"
     $readmeResponse = Invoke-WebRequest -UseBasicParsing -Uri $readmeUrl -TimeoutSec 60
     if ($readmeResponse.Content.Contains($marker)) {
         throw "В опубликованном README.md остался блок манифеста — он должен лежать только в Update.md."
     }
     Write-Host "      README.md: $readmeUrl — описание программы без блока манифеста"
 
-    $installUrl = "$webUrl/$Owner/$Repo/content/$Branch/install.ps1?raw=1"
+    $installUrl = "$contentBase/install.ps1?raw=1"
     $installResponse = Invoke-WebRequest -UseBasicParsing -Uri $installUrl -TimeoutSec 60
     if ($installResponse.Content -match '<!DOCTYPE|<html') {
         throw "install.ps1 по адресу $installUrl отдаётся как страница, а не как файл."
@@ -513,7 +518,7 @@ if ($VerifyDownload) {
 }
 
 Write-Host ''
-Write-Host "Готово. Релиз: $webUrl/$Owner/$Repo/releases/tag/$tag"
-Write-Host "Файлы репозитория: $webUrl/$Owner/$Repo (README.md, Update.md)"
+Write-Host "Готово. Релиз: $repoUrl/releases/tag/$tag"
+Write-Host "Файлы репозитория: $repoUrl (README.md, Update.md)"
 
 

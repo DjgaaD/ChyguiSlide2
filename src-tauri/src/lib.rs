@@ -2,12 +2,15 @@ mod commands;
 mod db;
 mod import;
 mod logger;
+mod obs;
+mod opener;
 mod updater;
 mod windows;
+mod yandex;
 
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -18,6 +21,8 @@ pub struct AppState {
     pub confirm_close: Mutex<bool>,
     pub allow_close: Mutex<bool>,
     pub close_prompt_open: Mutex<bool>,
+    /// LAN-вывод слов в OBS (источник «Браузер»).
+    pub obs: Arc<obs::ObsRuntime>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -61,7 +66,10 @@ pub fn run() {
                 confirm_close: Mutex::new(false),
                 allow_close: Mutex::new(false),
                 close_prompt_open: Mutex::new(false),
+                obs: Arc::new(obs::ObsRuntime::new()),
             });
+            // Вывод слов в OBS поднимается вместе с приложением, если включён в настройках.
+            obs::start_from_settings(&handle);
             // Диагностика внешних бинарников: наличие, размер и PE-подпись (MZ).
             commands::log_sidecars(&handle);
             logger::info("app", "инициализация завершена");
@@ -177,10 +185,21 @@ pub fn run() {
             commands::log_events,
             commands::get_log_info,
             commands::open_logs_folder,
+            obs::obs_settings,
+            obs::obs_save_settings,
+            obs::obs_push_slide,
+            obs::obs_push_style,
+            opener::open_external_link,
             updater::get_app_info,
             updater::check_app_update,
             updater::skip_app_update,
-            updater::install_app_update
+            updater::install_app_update,
+            yandex::yandex_settings,
+            yandex::save_yandex_settings,
+            yandex::check_yandex_token,
+            yandex::yandex_backup,
+            yandex::open_yandex_token_page,
+            yandex::open_yandex_backups_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

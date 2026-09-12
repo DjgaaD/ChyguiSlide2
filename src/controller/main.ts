@@ -1,4 +1,5 @@
 import { invoke, listen, open, readTextFile, save } from "../shared/ipc";
+import { installExternalLinkHandler } from "../shared/external-links";
 import {
   fetchJournalInfo,
   installGlobalLogging,
@@ -63,10 +64,12 @@ import {
 import {
   bindStylesUi,
   bootStyles,
+  getActiveStyleConfig,
   refreshActiveStylePreviews,
 } from "./styles";
 import { cleanSongLines } from "../shared/style";
 import { bindHotkeysUi, bootHotkeys, registerHotkeys } from "./hotkeys";
+import { bindObsUi, pushObsStyle, refreshObsStatus } from "./obs";
 
 type SongHit = { id: number; number: number; title: string };
 type SongDetail = {
@@ -85,6 +88,36 @@ type PendingSlide = {
   slideIndex?: number;
   /** Bible reference ("Ин 3:16") — отдельно от текста стиха. */
   verseRef?: string;
+};
+
+/**
+ * Ответ команды `yandex_settings`: настройки и состояние авторизации.
+ * Токен приходит целиком — поле «OAuth-токен» всегда показывает сохранённое
+ * значение, чтобы его можно было править или удалить.
+ */
+type YandexSettings = {
+  configured: boolean;
+  token: string;
+  clientId: string;
+  folder: string;
+  keepCopies: number;
+  cloudDir: string;
+};
+/** Ответ команды `check_yandex_token`. */
+type YandexAccount = { login: string; totalSpace: number; usedSpace: number };
+/** Ответ команды `yandex_backup` — для уведомления пользователю. */
+type YandexBackupResult = {
+  fileName: string;
+  cloudPath: string;
+  cloudDir: string;
+  /** Путь так, как его отдаёт Яндекс: `disk:/Приложения/…`. */
+  displayPath: string;
+  /** Ссылка на папку копий в веб-интерфейсе Диска (может быть пустой). */
+  webUrl: string;
+  sizeBytes: number;
+  uploadedAt: string;
+  removedCount: number;
+  removed: string[];
 };
 
 const STORAGE = {
@@ -106,6 +139,10 @@ let selectedBook = "";
 let selectedChapter = 1;
 let chapterVerses: Verse[] = [];
 let selectedBibleVerseIndex = 0;
+/** Стихи, выбранные Ctrl+кликом (индексы в текущем списке стихов). */
+let selectedBibleVerseIndexes: number[] = [];
+/** Что сейчас показано в блоке стихов: глава книги или результаты поиска. */
+let bibleListMode: "chapter" | "search" = "chapter";
 let bibleSearchResults: Verse[] = [];
 let bibleSearchIndex = -1;
 let bibleSearchRequestId = 0;
@@ -210,34 +247,146 @@ function setBiblePreview(payload: PendingSlide | null) {
     idle?.removeAttribute("hidden");
     if (showBtn) {
       showBtn.disabled = true;
+      showBtn.textContent = "Показать на экране";
     }
     return;
   }
   idle?.setAttribute("hidden", "");
   if (showBtn) {
     showBtn.disabled = false;
+    // При мультивыделении сразу видно, сколько стихов уйдёт на экран.
+    const count = selectedBibleVerseIndexes.length;
+    showBtn.textContent =
+      count > 1 ? `Показать на экране (${verseCountLabel(count)})` : "Показать на экране";
   }
   // На экран — только текст стиха; ссылка (verseRef) рисуется по настройкам стиля.
   previewSetText(frame, { lines: payload.lines, mode: payload.mode });
   refreshActiveStylePreviews();
 }
 
-function pickBibleVerse(index: number) {
-  const verse = chapterVerses[index];
+/** Список стихов, к которому относятся индексы выделения. */
+function currentVerseList(): Verse[] {
+  return bibleListMode === "search" ? bibleSearchResults : chapterVerses;
+}
+
+/** Выбранные стихи в порядке клика (пустые тексты отбрасываются). */
+function selectedBibleVerses(): Verse[] {
+  const list = currentVerseList();
+  const indexes =
+    selectedBibleVerseIndexes.length > 0 ? selectedBibleVerseIndexes : [selectedBibleVerseIndex];
+  return indexes
+    .map((index) => list[index])
+    .filter((verse): verse is Verse => Boolean(verse))
+    .filter((verse) => verse.text.trim().length > 0);
+}
+
+/**
+ * Ссылка на стихи с группировкой подряд идущих номеров:
+ * «От Иоанна 3:16-18», «От Иоанна 3:16,18», «Ин 3:16-18; 4:1».
+ */
+function formatVerseRef(verses: Verse[]): string {
+  const groups = new Map<string, { book: string; chapter: number; numbers: number[] }>();
+  for (const verse of verses) {
+    const key = `${verse.book}\u0000${verse.chapter}`;
+    const group = groups.get(key);
+    if (group) {
+      group.numbers.push(verse.verse);
+    } else {
+      groups.set(key, { book: verse.book, chapter: verse.chapter, numbers: [verse.verse] });
+    }
+  }
+
+  const parts: string[] = [];
+  let firstBook = "";
+  groups.forEach((group) => {
+    const numbers = [...new Set(group.numbers)].sort((a, b) => a - b);
+    const ranges: string[] = [];
+    let start = numbers[0];
+    let previous = numbers[0];
+    for (let i = 1; i <= numbers.length; i += 1) {
+      const current = numbers[i];
+      if (current !== previous + 1) {
+        ranges.push(start === previous ? String(start) : `${start}-${previous}`);
+        start = current;
+      }
+      previous = current;
+    }
+    // Название книги повторяется только при переходе к другой книге.
+    const bookPart = group.book === firstBook ? "" : `${group.book} `;
+    if (!firstBook) {
+      firstBook = group.book;
+    }
+    parts.push(`${bookPart}${group.chapter}:${ranges.join(",")}`);
+  });
+  return parts.join("; ");
+}
+
+/** «1 стих», «2 стиха», «5 стихов» — для подписи кнопки показа. */
+function verseCountLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) {
+    return `${count} стих`;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${count} стиха`;
+  }
+  return `${count} стихов`;
+}
+
+/** Подсветка выделения: «якорный» стих — `.selected`, добавленные — `.multi-selected`. */
+function syncBibleVerseSelection() {
+  const anchor = selectedBibleVerseIndexes[0];
+  const multiple = selectedBibleVerseIndexes.length > 1;
+  document.querySelectorAll<HTMLElement>("#bible-verses li").forEach((node) => {
+    const index = Number(node.dataset.key);
+    const selected = selectedBibleVerseIndexes.includes(index);
+    node.classList.toggle("selected", selected);
+    node.classList.toggle("multi-selected", selected && multiple && index !== anchor);
+  });
+}
+
+/**
+ * Выбор стиха в списке. Обычный клик выделяет один стих (как раньше),
+ * клик с Ctrl добавляет стих к выделению, повторный Ctrl+клик убирает его.
+ */
+function pickBibleVerse(index: number, event?: MouseEvent) {
+  const list = currentVerseList();
+  const verse = list[index];
   if (!verse) {
     return;
   }
-  selectedBibleVerseIndex = index;
-  // На экран уходит только текст стиха; ссылка — отдельно (verseRef),
-  // чтобы display.html мог показать её по настройкам стиля.
-  setBiblePreview({
-    lines: [verse.text],
-    mode: "bible",
-    verseRef: `${verse.book} ${verse.chapter}:${verse.verse}`,
-  });
-  document.querySelectorAll("#bible-verses li").forEach((node) => {
-    node.classList.toggle("selected", (node as HTMLElement).dataset.key === String(index));
-  });
+  if (bibleListMode === "search") {
+    // Результат поиска становится активной главой Библии — по нему работает F5.
+    selectedBook = verse.book;
+    selectedChapter = verse.chapter;
+    chapterVerses = [verse];
+    bibleSearchIndex = index;
+  }
+
+  if (event?.ctrlKey || event?.metaKey) {
+    const at = selectedBibleVerseIndexes.indexOf(index);
+    if (at >= 0) {
+      selectedBibleVerseIndexes.splice(at, 1);
+    } else {
+      selectedBibleVerseIndexes.push(index);
+    }
+    // Пустое выделение не оставляем: стих, с которого сняли отметку, остаётся активным.
+    if (selectedBibleVerseIndexes.length === 0) {
+      selectedBibleVerseIndexes.push(index);
+    }
+  } else {
+    selectedBibleVerseIndexes = [index];
+  }
+  selectedBibleVerseIndex = selectedBibleVerseIndexes[selectedBibleVerseIndexes.length - 1];
+
+  const verses = selectedBibleVerses();
+  setBiblePreview(
+    verses.length > 0
+      ? { lines: verses.map((item) => item.text), mode: "bible", verseRef: formatVerseRef(verses) }
+      : null,
+  );
+  syncBibleVerseSelection();
   requestAnimationFrame(updateBibleVerseStripe);
 }
 
@@ -415,7 +564,7 @@ function updateSlideStripe() {
 function fillList(
   root: HTMLElement,
   items: { key: string; html: string; title?: string; className?: string }[],
-  onPick: (key: string) => void,
+  onPick: (key: string, event: MouseEvent) => void,
   activeKey?: string,
   activeClass = "active",
 ) {
@@ -433,7 +582,7 @@ function fillList(
     if (item.key === activeKey) {
       li.classList.add(activeClass);
     }
-    li.addEventListener("click", () => onPick(item.key));
+    li.addEventListener("click", (event) => onPick(item.key, event));
     root.appendChild(li);
   }
 }
@@ -693,6 +842,226 @@ async function restoreDatabase() {
   }
 }
 
+// ——— Резервная копия на Яндекс.Диск ———
+
+/**
+ * Статус последней операции с Яндекс.Диском. Подробности лежат внутри спойлера,
+ * поэтому при ошибке спойлер раскрывается — иначе сообщение осталось бы скрытым.
+ */
+function yandexStatus(text: string, error = false) {
+  const el = document.getElementById("yandex-status");
+  if (!el) {
+    return;
+  }
+  el.textContent = text;
+  el.classList.toggle("error", error);
+  if (error) {
+    const spoiler = document.getElementById("yandex-settings") as HTMLDetailsElement | null;
+    if (spoiler) {
+      spoiler.open = true;
+    }
+  }
+}
+
+/** «12.4 МБ» — человекочитаемый размер. */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) {
+    return `${(bytes / 1024 ** 3).toFixed(2)} ГБ`;
+  }
+  if (bytes >= 1024 ** 2) {
+    return `${(bytes / 1024 ** 2).toFixed(1)} МБ`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(0)} КБ`;
+  }
+  return `${bytes} Б`;
+}
+
+/**
+ * Расположение копий для человека: `app:/Папка/backups` и `disk:/Приложения/…`
+ * превращаются в цепочку «Яндекс.Диск → Приложения → …». Копии лежат в папке
+ * приложения, поэтому в списке «Все файлы» их не видно.
+ */
+function yandexPathText(path: string): string {
+  const segments = path.replace(/^[a-z]+:\//i, "").split("/").filter(Boolean);
+  if (!segments.length) {
+    return path;
+  }
+  const tail = segments.join(" → ");
+  return /^app:/i.test(path) ? `папка приложения → ${tail}` : `Яндекс.Диск → ${tail}`;
+}
+
+/** Токен, показанный в поле: по нему видно, менял ли пользователь поле вручную. */
+let yandexSavedToken = "";
+
+/** Заполняет поле, не мешая набору: значение не перебиваем, если поле в фокусе. */
+function setYandexField(selector: string, value: string) {
+  const el = input(selector);
+  if (document.activeElement !== el) {
+    el.value = value;
+  }
+}
+
+/**
+ * Показывает настройки Яндекс.Диска. Токен подставляется прямо в поле — так его
+ * видно, можно поправить или стереть (пустое поле = токена нет).
+ */
+function applyYandexSettings(settings: YandexSettings) {
+  setYandexField("#yandex-client-id", settings.clientId);
+  setYandexField("#yandex-token", settings.token);
+  setYandexField("#yandex-folder", settings.folder);
+  setYandexField("#yandex-keep", String(settings.keepCopies));
+  yandexSavedToken = settings.token;
+  const state = document.getElementById("yandex-state");
+  if (state) {
+    state.textContent = settings.configured ? "Токен сохранён" : "Токен не сохранён";
+  }
+  yandexStatus(
+    settings.configured
+      ? `Токен сохранён. Копии: ${yandexPathText(settings.cloudDir)}, храним ${settings.keepCopies}.`
+      : `Токен не сохранён — нажмите «Получить токен». Копии: ${yandexPathText(settings.cloudDir)}.`,
+  );
+}
+
+/** Показывает настройки Яндекс.Диска (обновляются при открытии вкладки). */
+async function refreshYandexStatus() {
+  try {
+    applyYandexSettings(await invoke<YandexSettings>("yandex_settings"));
+  } catch (error) {
+    yandexStatus(`Не удалось прочитать настройку: ${String(error)}`, true);
+  }
+}
+
+/** Значения формы настроек Яндекс.Диска. */
+function yandexSettingsForm() {
+  return {
+    clientId: input("#yandex-client-id").value.trim(),
+    folder: input("#yandex-folder").value.trim(),
+    // Пустое или некорректное поле означает «не ограничивать число копий».
+    keepCopies: Math.trunc(Number(input("#yandex-keep").value || "0")) || 0,
+    // Пустое поле токена означает «удалить сохранённый токен».
+    token: input("#yandex-token").value.trim(),
+  };
+}
+
+/** Сохраняет настройки Яндекс.Диска вместе с токеном; `quiet` — без уведомления. */
+async function saveYandexSettings(quiet = false): Promise<YandexSettings | null> {
+  const form = yandexSettingsForm();
+  try {
+    const settings = await invoke<YandexSettings>("save_yandex_settings", form);
+    applyYandexSettings(settings);
+    logInfo(
+      "yandex",
+      `настройки Яндекс.Диска сохранены: ${settings.cloudDir}, токен ${settings.configured ? "есть" : "нет"}`,
+    );
+    if (!quiet) {
+      window.alert(
+        settings.configured ? "Настройки сохранены." : "Настройки сохранены, токен удалён.",
+      );
+    }
+    return settings;
+  } catch (error) {
+    console.error("Yandex.Disk settings save failed", error);
+    yandexStatus(`Не удалось сохранить настройки: ${String(error)}`, true);
+    return null;
+  }
+}
+
+/** Проверяет токен (из поля или сохранённый) и показывает объём диска. */
+async function checkYandexToken() {
+  const token = input("#yandex-token").value.trim();
+  yandexStatus("Проверяем токен…");
+  try {
+    const account = await invoke<YandexAccount>("check_yandex_token", { token });
+    yandexStatus(
+      `Токен рабочий: ${account.login} — занято ${formatBytes(account.usedSpace)} из ${formatBytes(account.totalSpace)}.`,
+    );
+  } catch (error) {
+    console.error("Yandex.Disk token check failed", error);
+    yandexStatus(`Токен не принят: ${String(error)}`, true);
+  }
+}
+
+/**
+ * Открывает страницу, на которой Яндекс показывает OAuth-токен.
+ *
+ * Client ID — единственное поле, без которого страница не откроется, поэтому его
+ * отсутствие проверяется до сохранения настроек.
+ */
+async function openYandexTokenPage() {
+  if (!input("#yandex-client-id").value.trim()) {
+    yandexStatus("Укажите Client ID приложения Яндекс.Диска.", true);
+    return;
+  }
+  // Client ID из поля сохраняем сразу: иначе страница откроется без приложения.
+  if (!(await saveYandexSettings(true))) {
+    return;
+  }
+  // Поле для вставки токена сразу в фокусе: со страницы Яндекса токен скопируют сюда.
+  input("#yandex-token").focus();
+  try {
+    await invoke("open_yandex_token_page");
+    yandexStatus(
+      "Страница Яндекса открыта: разрешите доступ, скопируйте токен со страницы в поле «OAuth-токен» и нажмите «Сохранить настройки».",
+    );
+  } catch (error) {
+    console.error("Yandex.Disk token page failed", error);
+    yandexStatus(`Не удалось открыть браузер: ${String(error)}`, true);
+  }
+}
+
+/** Резервная копия на Яндекс.Диск: архив + загрузка, со статусом в настройках. */
+async function backupToYandex() {
+  const button = document.getElementById("yandex-backup") as HTMLButtonElement | null;
+  // Правки формы (в том числе новый токен) сохраняем сразу — иначе копия ушла бы
+  // по старым настройкам. Если поле токена не трогали, лишней записи не будет.
+  const typedToken = input("#yandex-token").value.trim();
+  if (typedToken !== yandexSavedToken && !(await saveYandexSettings(true))) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  yandexStatus("Собираем архив и отправляем на Яндекс.Диск…");
+  try {
+    const result = await invoke<YandexBackupResult>("yandex_backup");
+    const rotated =
+      result.removedCount > 0 ? ` Убрано старых копий: ${result.removedCount}.` : "";
+    const where = yandexPathText(result.displayPath);
+    yandexStatus(
+      `Копия загружена: ${where} (${formatBytes(result.sizeBytes)}, ${result.uploadedAt}).${rotated}`,
+    );
+    window.alert(
+      `Резервная копия загружена на Яндекс.Диск:\n${where}` +
+        (result.removedCount > 0
+          ? `\nСтарые копии убраны в корзину: ${result.removed.join(", ")}`
+          : "") +
+        "\n\nКопии лежат в папке приложения: в списке «Все файлы» её не видно. " +
+        "Кнопка «Открыть папку с копиями на Диске» покажет её в браузере.",
+    );
+  } catch (error) {
+    console.error("Yandex.Disk backup failed", error);
+    yandexStatus(`Не удалось создать копию: ${String(error)}`, true);
+    window.alert(`Не удалось создать копию на Яндекс.Диске:\n${String(error)}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+}
+
+/** Открывает в браузере папку с копиями на Яндекс.Диске. */
+async function openYandexFolder() {
+  yandexStatus("Открываем папку с копиями на Диске…");
+  try {
+    await invoke("open_yandex_backups_folder");
+    yandexStatus("Папка с копиями открыта в браузере.");
+  } catch (error) {
+    console.error("Yandex.Disk folder open failed", error);
+    yandexStatus(`Не удалось открыть папку: ${String(error)}`, true);
+  }
+}
+
 /** Обновляет подсказку с путём к каталогу журналов во вкладке «Журнал». */
 async function refreshLogsHint() {
   const hint = document.getElementById("logs-dir-hint");
@@ -881,18 +1250,49 @@ async function startAnnouncementShow(): Promise<boolean> {
   return ok;
 }
 
-/** Единая логика показа стиха Библии: в быстрый плейлист уходит ВСЯ глава,
- *  стартовый слайд — выбранный стих, чтобы «Следующий» показывал следующие стихи. */
+/**
+ * Показ стихов Библии.
+ * Один стих — прежнее поведение: в быстрый плейлист уходит вся глава, а стартовый
+ * слайд — выбранный стих, чтобы «Следующий» показывал следующие стихи.
+ * Несколько стихов (Ctrl+клик) — один слайд: тексты объединяются в общий блок,
+ * а ссылка группируется («От Иоанна 3:16-18»).
+ */
 async function startBibleVerseShow(): Promise<boolean> {
   if (!pending || pending.mode !== "bible") {
     return false;
   }
-  const verses = chapterVerses.filter((v) => v.text.trim().length > 0);
+  const picked = selectedBibleVerses();
+  if (picked.length === 0) {
+    return false;
+  }
+
+  if (picked.length > 1) {
+    const reference = formatVerseRef(picked);
+    const ok = await openTextInBroadcast(
+      {
+        title: reference,
+        slides: [picked.map((verse) => verse.text).join("\n")],
+        mode: "bible",
+        verseRef: reference,
+        verseRefs: [reference],
+      },
+      true,
+      0,
+    );
+    if (ok) {
+      switchTab("broadcast");
+    }
+    return ok;
+  }
+
+  const verses = (bibleListMode === "chapter" ? chapterVerses : picked).filter(
+    (verse) => verse.text.trim().length > 0,
+  );
   if (verses.length === 0) {
     return false;
   }
-  const slides = verses.map((v) => v.text);
-  const verseRefs = verses.map((v) => `${v.book} ${v.chapter}:${v.verse}`);
+  const slides = verses.map((verse) => verse.text);
+  const verseRefs = verses.map((verse) => `${verse.book} ${verse.chapter}:${verse.verse}`);
   const startIdx = Math.min(Math.max(0, selectedBibleVerseIndex), slides.length - 1);
   const ok = await openTextInBroadcast(
     {
@@ -1027,19 +1427,6 @@ async function loadBooks() {
   renderBooks();
 }
 
-function showBibleSearchResult(verse: Verse) {
-  // Make a global search result the active Bible selection so F5 can present it.
-  selectedBook = verse.book;
-  selectedChapter = verse.chapter;
-  selectedBibleVerseIndex = 0;
-  chapterVerses = [verse];
-  setBiblePreview({
-    lines: [verse.text],
-    mode: "bible",
-    verseRef: `${verse.book} ${verse.chapter}:${verse.verse}`,
-  });
-}
-
 async function showBibleSearchResultOnScreen(verse: Verse) {
   await openTextInBroadcast(
     {
@@ -1071,6 +1458,9 @@ async function searchBibleQuery() {
     return;
   }
   bibleSearchIndex = bibleSearchResults.length > 0 ? 0 : -1;
+  // Поиск показывает собственный список — выделение относится к его результатам.
+  bibleListMode = "search";
+  selectedBibleVerseIndexes = [];
   const chapters = $("#bible-chapters");
   chapters.replaceChildren();
   chapters.hidden = true;
@@ -1081,16 +1471,16 @@ async function searchBibleQuery() {
       className: "slide-item",
       html: `<div class="slide-label">${verse.book} ${verse.chapter}:${verse.verse}</div><div class="slide-text">${verse.text}</div>`,
     })),
-    (key) => {
-      bibleSearchIndex = Number(key);
-      const verse = bibleSearchResults[bibleSearchIndex];
-      if (verse) showBibleSearchResult(verse);
+    (key, event) => {
+      pickBibleVerse(Number(key), event);
     },
     bibleSearchIndex >= 0 ? String(bibleSearchIndex) : undefined,
     "selected",
   );
-  const first = bibleSearchResults[0];
-  if (first) showBibleSearchResult(first);
+  // Первый результат сразу становится активным стихом — как было до мультивыделения.
+  if (bibleSearchResults.length > 0) {
+    pickBibleVerse(0);
+  }
 }
 
 function renderBooks() {
@@ -1147,6 +1537,10 @@ async function selectBook(book: string) {
 
 async function selectChapter(chapter: number) {
   selectedChapter = chapter;
+  // Показана глава — выделение относится к chapterVerses.
+  bibleListMode = "chapter";
+  selectedBibleVerseIndexes = [];
+  selectedBibleVerseIndex = 0;
   $("#bible-chapters").hidden = false;
   document.querySelectorAll("#bible-chapters .chapter-chip").forEach((node) => {
     node.classList.toggle("active", node.textContent === String(chapter));
@@ -1164,8 +1558,8 @@ async function selectChapter(chapter: number) {
       className: "slide-item",
       html: `<div class="slide-label">Стих ${verse.verse}</div><div class="slide-text">${verse.text}</div>`,
     })),
-    (key) => {
-      pickBibleVerse(Number(key));
+    (key, event) => {
+      pickBibleVerse(Number(key), event);
     },
   );
   setBiblePreview(null);
@@ -2091,14 +2485,30 @@ function bind() {
   });
   $("#backup-database").addEventListener("click", () => void backupDatabase());
   $("#restore-database").addEventListener("click", () => void restoreDatabase());
+  $("#yandex-settings-save").addEventListener("click", () => void saveYandexSettings());
+  $("#yandex-token-check").addEventListener("click", () => void checkYandexToken());
+  $("#yandex-token-page").addEventListener("click", () => void openYandexTokenPage());
+  $("#yandex-backup").addEventListener("click", () => void backupToYandex());
+  $("#yandex-open-folder").addEventListener("click", () => void openYandexFolder());
+  void refreshYandexStatus();
+  // Вывод слов в OBS: настройки источника «Браузер».
+  bindObsUi();
   document
     .getElementById("open-logs-folder")
     ?.addEventListener("click", () => void openJournalFolder());
   document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = (btn as HTMLElement).dataset.settingsTab;
+      if (tab === "translation") {
+        // Состояние сервера вывода в OBS обновляем при каждом открытии вкладки.
+        void refreshObsStatus();
+      }
       if (tab === "logs") {
         void refreshLogsHint();
+      }
+      if (tab === "backups") {
+        // Состояние токена обновляем при каждом открытии вкладки.
+        void refreshYandexStatus();
       }
       if (tab === "about") {
         // Версию и сведения о сборке обновляем при каждом открытии вкладки.
@@ -2110,6 +2520,8 @@ function bind() {
 
 async function boot() {
   installGlobalLogging("controller");
+  // Внешние ссылки уходят в системный браузер, а не в окно приложения.
+  installExternalLinkHandler();
   logInfo("boot", "запуск интерфейса");
   applyTheme((localStorage.getItem(STORAGE.theme) as "system" | "dark" | "light") || "system");
   refreshIcons();
@@ -2132,6 +2544,9 @@ async function boot() {
 
   await bootStyles();
   logInfo("boot", "стили загружены");
+  // Активный стиль сразу уходит и в OBS: оверлей, открытый до начала показа,
+  // должен получить цвет, шрифт и переходы, а не оформление по умолчанию.
+  void pushObsStyle(getActiveStyleConfig());
 
   await resolvePreviewAspect();
   refreshBroadcastPreviewAspect(previewAspect.width, previewAspect.height);

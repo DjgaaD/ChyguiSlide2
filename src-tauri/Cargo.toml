@@ -1,6 +1,6 @@
 [package]
 name = "chyguislide"
-version = "0.1.1"
+version = "0.1.2"
 description = "Church presentation controller and display"
 authors = ["you"]
 edition = "2021"
@@ -26,7 +26,7 @@ flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 codegen-units = 1

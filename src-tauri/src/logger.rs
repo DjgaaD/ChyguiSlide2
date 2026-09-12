@@ -133,6 +133,16 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
+/// Отметка локального времени для имён файлов (`2026-09-12_14-33-05`).
+///
+/// Используется модулями, которым нужна дата в имени создаваемого файла
+/// (например, резервная копия на Яндекс.Диск), чтобы не дублировать
+/// платформенный код получения локального времени.
+pub(crate) fn local_file_stamp() -> String {
+    now_parts().file_stamp()
+}
+
+
 
 /// Каталог журналов: `%LOCALAPPDATA%/<identifier>/logs`.
 pub fn log_dir(app: &AppHandle) -> Result<PathBuf, String> {

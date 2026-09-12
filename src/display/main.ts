@@ -29,8 +29,10 @@ const PERSISTENT_STORAGE_KEY = "chyguislide.persistentDisplay";
 const isPreviewFrame =
   new URLSearchParams(window.location.search).get("preview") === "1";
 
+const root = document.querySelector<HTMLElement>("#display-root")!;
 const layerBg = document.querySelector<HTMLElement>("#layer-bg")!;
 const layerOverlay = document.querySelector<HTMLElement>("#layer-overlay")!;
+const layerText = document.querySelector<HTMLElement>("#layer-text")!;
 const paneA = document.querySelector<HTMLElement>("#text-a")!;
 const paneB = document.querySelector<HTMLElement>("#text-b")!;
 
@@ -94,6 +96,8 @@ function pxOf(value: string): number {
  */
 const AUTOFIT_BASE_PX = 100;
 const AUTOFIT_START_RATIO = 0.15;
+/** Подпись стиха чуть меньше основного текста — как в CSS `.bible-caption`. */
+const CAPTION_SIZE_RATIO = 0.9;
 
 function fitNow(pane: HTMLElement, content: HTMLElement) {
   if (!content.isConnected) {
@@ -156,6 +160,12 @@ function fitNow(pane: HTMLElement, content: HTMLElement) {
     fontSize = next;
   }
   content.style.fontSize = `${fontSize}px`;
+  // Подписи, прибитые к краям экрана, лежат вне `.slide-content` и «em» от
+  // автофита не наследуют — размер передаём переменной.
+  pane.style.setProperty(
+    "--sl-caption-px",
+    `${Math.round(fontSize * CAPTION_SIZE_RATIO)}px`,
+  );
 }
 
 /** Автофит запускается только после полной загрузки окна (window.load). */
@@ -272,6 +282,35 @@ let transitionSeq = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/* ——— Плавное появление и угасание кадра ———
+   Старт и финиш трансляции идут строго через прозрачность главного контейнера
+   (#display-root, переход задан в display.css). Переключение слайдов внутри
+   показа кадр не гасит: там анимируются панели текста. */
+
+/** Длительность перехода прозрачности — синхронно с `#display-root` в display.css. */
+const FADE_MS = 400;
+
+/** Номера команд гашения: новая команда отменяет незавершённую предыдущую. */
+let rootFadeSeq = 0;
+let textFadeSeq = 0;
+
+/** Мгновенно (без анимации) гасит или проявляет элемент. */
+function setFadeInstant(el: HTMLElement, hidden: boolean) {
+  const previous = el.style.transition;
+  el.style.transition = "none";
+  el.classList.toggle("fade-out", hidden);
+  void el.offsetHeight; // фиксируем состояние до возврата перехода
+  el.style.transition = previous;
+}
+
+/**
+ * Проявляет элемент следующим кадром: класс `.fade-out` снимается уже после
+ * отрисовки подготовленного DOM, поэтому проявление идёт через CSS-переход.
+ */
+function revealNextFrame(el: HTMLElement) {
+  window.requestAnimationFrame(() => el.classList.remove("fade-out"));
 }
 
 /** Снять inline-стили анимации на панели И строках — к чистому CSS-состоянию. */
@@ -432,9 +471,39 @@ async function animateTransition(
   clearPaneAnimationStyles(prev);
 }
 
+/**
+ * Показывает ли слой фона что-то прямо сейчас. По этому признаку видно, можно ли
+ * гасить весь кадр для плавного появления первого слайда: при постоянном фоне
+ * (второй экран) кадр уже виден, и его гашение выглядит как «моргание» фона.
+ */
+function isBackgroundOnScreen(): boolean {
+  return layerBg.classList.contains("visible") && layerBg.style.display !== "none";
+}
+
 function setText(payload: SetTextPayload) {
+  // Новый слайд отменяет незавершённую очистку: иначе её таймер сработает уже
+  // после отрисовки и сотрёт только что показанный текст.
+  rootFadeSeq += 1;
+  textFadeSeq += 1;
+
   const next = backPane();
   const prev = frontPane();
+  const hadPrev = prev.classList.contains("visible");
+  const rootHidden = root.classList.contains("fade-out");
+  const textHidden = layerText.classList.contains("fade-out");
+  // Экран пуст (старт трансляции или «Очистить»): слайд готовим в погашенном
+  // кадре, а проявляем его снятием `.fade-out` на следующем кадре.
+  const freshStart = rootHidden || textHidden || !hadPrev;
+  // Кадр с уже проявленным фоном («Постоянный фон на втором экране») целиком гасить
+  // нельзя: фон «моргает» чёрным на старте показа. В этом случае проявляем только
+  // слой текста, а фон остаётся на экране без перерыва.
+  const keepFrame = freshStart && !rootHidden && !textHidden && isBackgroundOnScreen();
+  if (keepFrame) {
+    setFadeInstant(layerText, true);
+  } else if (freshStart && !rootHidden && !textHidden) {
+    setFadeInstant(root, true);
+  }
+
   const content = renderText(next, payload);
   const seq = ++transitionSeq;
   const kind = activeStyle.transitionType;
@@ -450,17 +519,53 @@ function setText(payload: SetTextPayload) {
   lastPayload = payload;
   frontContent = content;
 
-  // Все анимации (включая «fade») выполняются JS-функциями, портированными 1:1 из демо.
+  if (freshStart) {
+    // Плавное появление: панели уже содержат готовый слайд.
+    if (keepFrame) {
+      revealNextFrame(layerText);
+      return;
+    }
+    revealNextFrame(root);
+    if (textHidden) {
+      revealNextFrame(layerText);
+    }
+    return;
+  }
+
+  // Переключение слайдов внутри показа: кадр не гаснет, анимируются панели.
+  // Все анимации (включая «fade») выполняются JS-функциями, портированными
+  // 1:1 из демо.
   if (kind !== "none" && ms > 0) {
     void animateTransition(kind, next, prev, ms, seq);
+    return;
   }
+  // Тема «без перехода»: вместо резкой подмены — короткий кроссфейд, иначе
+  // смена стиха выглядит как «моргание».
+  void animateTransition("crossfade", next, prev, FADE_MS, seq);
 }
 
+/** Мгновенно убирает текст с экрана (плавный вариант — `clearTextWithFade`). */
 function clearText() {
   const prev = frontPane();
   prev.classList.remove("visible");
   lastPayload = null;
   frontContent = null;
+}
+
+/**
+ * Очистка только текста: слой текста сначала гаснет, и лишь после перехода
+ * убирается DOM — резкое удаление выглядит как «моргание». Медиа на экране при
+ * этом продолжает играть (кадр не гаснет).
+ */
+function clearTextWithFade() {
+  const seq = ++textFadeSeq;
+  layerText.classList.add("fade-out");
+  window.setTimeout(() => {
+    if (seq !== textFadeSeq) {
+      return;
+    }
+    clearText();
+  }, FADE_MS);
 }
 
 function destroyMedia() {
@@ -476,6 +581,30 @@ function destroyMedia() {
   currentMedia.remove();
   currentMedia = null;
   currentBgPath = null;
+}
+
+/**
+ * Плавное угасание медиа: слой фона гаснет, элементы убираются после перехода.
+ * Служебные флаги сбрасываются сразу — фоном снова управляет стиль, — а сам
+ * элемент живёт до конца анимации, иначе кадр обрывается рывком.
+ */
+function fadeOutMedia(then?: () => void) {
+  broadcastMediaActive = false;
+  currentBgPath = null;
+  const node = currentMedia;
+  currentMedia = null;
+  fadeBg(false);
+  if (!node) {
+    then?.();
+    return;
+  }
+  if (node instanceof HTMLVideoElement) {
+    node.pause();
+  }
+  window.setTimeout(() => {
+    node.remove();
+    then?.();
+  }, FADE_MS);
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -528,9 +657,13 @@ function applyStyleToDisplay(cfgIn: SetStylePayload) {
     const color = hexToRgba(cfg.strokeColor, Number(cfg.strokeOpacity) || 0);
     root.style.setProperty("--sl-stroke", `${cfg.strokeWidth}px ${color}`);
     root.style.setProperty("--sl-text-shadow", strokeShadows(cfg));
+    root.style.setProperty("--sl-caption-shadow", strokeShadows(cfg));
   } else {
     root.style.setProperty("--sl-stroke", "none");
     root.style.setProperty("--sl-text-shadow", "none");
+    // Тема без обводки: подписи стиха всё равно нужна мягкая тень, иначе она
+    // теряется на фоне — размер у неё почти как у основного текста.
+    root.style.setProperty("--sl-caption-shadow", "0 2px 14px rgba(0, 0, 0, 0.85)");
   }
 
   // Все анимации переходов выполняет JS (см. setText) — CSS-переход панели выключаем.
@@ -564,12 +697,18 @@ function applyStyleBackground(cfg: SetStylePayload) {
   currentBgPath = path;
 
   if (!mediaMode || !path) {
+    // Цвет/градиент стиля: если на экране было медиа, сначала гасим слой фона и
+    // только после перехода показываем новый фон — иначе кадр дёргается.
+    const showColor = () => {
+      layerBg.style.removeProperty("backgroundImage");
+      layerBg.style.background = cfg.backgroundColor;
+      fadeBg(true);
+    };
     if (currentMedia) {
-      destroyMedia();
+      fadeOutMedia(showColor);
+    } else {
+      showColor();
     }
-    layerBg.style.removeProperty("backgroundImage");
-    layerBg.style.background = cfg.backgroundColor;
-    fadeBg(true);
     return;
   }
   layerBg.style.removeProperty("background");
@@ -614,9 +753,26 @@ function reportMediaStatus() {
   });
 }
 
+/**
+ * Показывает или гасит слой фона. Слой не скрывается сразу через `display: none`
+ * — сначала идёт переход прозрачности, иначе фон «моргает».
+ */
 function fadeBg(visible: boolean) {
-  layerBg.style.display = visible ? "block" : "none";
-  layerBg.classList.toggle("visible", visible);
+  if (visible) {
+    const wasHidden = layerBg.style.display === "none";
+    layerBg.style.display = "block";
+    if (wasHidden) {
+      void layerBg.offsetHeight; // фиксируем показ до смены прозрачности
+    }
+    layerBg.classList.add("visible");
+    return;
+  }
+  layerBg.classList.remove("visible");
+  window.setTimeout(() => {
+    if (!layerBg.classList.contains("visible")) {
+      layerBg.style.display = "none";
+    }
+  }, FADE_MS);
 }
 
 /** Источник медиа: явный показ из «Трансляции» или фон активного стиля. */
@@ -628,16 +784,27 @@ type MediaOrigin = "style" | "broadcast";
  * фон вместо него.
  */
 function setMedia(payload: SetMediaPayload, origin: MediaOrigin = "broadcast") {
-  destroyMedia();
-  fadeBg(false);
-
   if (payload.kind === "none" || !payload.path) {
-    // destroyMedia() уже сбросил broadcastMediaActive — фоном снова управляет стиль.
+    // Очистка медиа: слой фона гаснет, элементы убираются после перехода
+    // (fadeOutMedia сразу сбрасывает broadcastMediaActive — фоном снова
+    // управляет стиль).
+    fadeOutMedia();
     return;
   }
 
+  // Новый источник: старый убираем сразу — новый проявится по готовности
+  // (loadeddata/load → fadeBg(true)).
+  destroyMedia();
+  fadeBg(false);
+
   if (origin === "broadcast") {
     broadcastMediaActive = true;
+  }
+
+  // Показ медиа отменяет незавершённую очистку и проявляет кадр.
+  rootFadeSeq += 1;
+  if (root.classList.contains("fade-out")) {
+    revealNextFrame(root);
   }
 
   // Keep the filesystem path raw; convertFileSrc performs the required URL encoding
@@ -730,19 +897,10 @@ function controlMedia(payload: MediaControlPayload) {
         video.volume = Math.min(1, Math.max(0, payload.value));
       }
       break;
-    case "fade-out": {
-      fadeBg(false);
-      const node = currentMedia;
-      const done = () => {
-        layerBg.removeEventListener("transitionend", done);
-        if (currentMedia === node) {
-          destroyMedia();
-        }
-      };
-      layerBg.addEventListener("transitionend", done);
-      window.setTimeout(done, 400);
+    case "fade-out":
+      // Плавное угасание: медиа убирается после перехода прозрачности.
+      fadeOutMedia();
       break;
-    }
   }
 }
 
@@ -752,10 +910,10 @@ function setOverlay(payload: OverlayPayload) {
 
 function handleClear(payload?: ClearPayload | null) {
   if (payload?.textOnly) {
-    clearText();
+    clearTextWithFade();
     return;
   }
-  clearAllDisplayContent();
+  void clearAllDisplayContent();
 }
 
 function handlePreviewMessage(data: PreviewMessage) {
@@ -790,9 +948,28 @@ function handlePreviewMessage(data: PreviewMessage) {
   }
 }
 
-function clearAllDisplayContent() {
+/**
+ * Полная очистка экрана трансляции. Кадр сначала плавно гаснет, и только после
+ * перехода убирается DOM и останавливается медиа. Контейнер остаётся погашенным:
+ * следующий показ проявляется сам (см. `setText`/`setMedia`).
+ *
+ * `instant` — аварийный вариант (Esc): гасим без анимации, чтобы успеть закрыть
+ * окно, не дожидаясь перехода.
+ */
+async function clearAllDisplayContent(instant = false) {
+  const seq = ++rootFadeSeq;
+  if (instant) {
+    setFadeInstant(root, true);
+  } else {
+    root.classList.add("fade-out");
+    await sleep(FADE_MS);
+  }
+  if (seq !== rootFadeSeq) {
+    return;
+  }
   clearText();
   destroyMedia();
+  layerBg.classList.remove("visible");
   layerBg.style.display = "none";
   layerOverlay.style.opacity = "0";
 }
@@ -806,12 +983,14 @@ function isPersistentBackground(): boolean {
 }
 
 async function emergencyEscape() {
+  // Аварийное скрытие: Esc убирает кадр немедленно, поэтому здесь мгновенное
+  // гашение без ожидания перехода.
   if (isPersistentBackground()) {
     // Постоянный фон: убираем только текст, медиа продолжает играть.
     clearText();
     return;
   }
-  clearAllDisplayContent();
+  await clearAllDisplayContent(true);
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().close();

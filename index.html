@@ -181,7 +181,10 @@
             <div class="sub" id="bible-chapter-sub">Глава</div>
           </div>
           <div id="bible-chapters" class="chapter-grid"></div>
-          <div class="section-label subtle">Стихи</div>
+          <div class="section-label subtle">
+            Стихи
+            <span class="label-note">Ctrl+клик — несколько стихов одним блоком</span>
+          </div>
           <div class="slide-host" id="bible-verse-host">
             <div class="slide-stripe" id="bible-verse-stripe"></div>
             <ul id="bible-verses" class="slide-list"></ul>
@@ -452,6 +455,44 @@
               открывается при показе слайда или при включении этой опции.
             </p>
           </div>
+          <!-- Вывод слов в OBS: источник «Браузер» со страницей-оверлеем. -->
+          <div class="settings-block">
+            <h2 class="settings-title">Вывод слов в OBS</h2>
+            <p class="hint">
+              Добавьте в OBS источник «Браузер» и укажите адрес ниже: слова слайдов будут
+              появляться в трансляции поверх видео. Фон оверлея прозрачный, поэтому текст виден
+              только поверх других источников. Слова идут одной строкой, а размер шрифта
+              подбирается так, чтобы они занимали источник целиком — задайте источнику размер
+              того места на сцене, где должны быть слова (например 1920×1080 или 1920×200).
+              В адрес можно добавить размер сцены (<code>?w=1920&amp;h=1080</code>) и подложку
+              под текст (<code>?backdrop=0.4</code>) — подложка из адреса сильнее настройки ниже.
+            </p>
+            <label class="settings-check">
+              <input type="checkbox" id="obs-enabled" />
+              <span>Отправлять слова слайдов в OBS</span>
+            </label>
+            <label class="settings-check">
+              <input type="checkbox" id="obs-backdrop-enabled" />
+              <span>Подложка под текст (тёмный фон под словами)</span>
+            </label>
+            <div class="obs-form">
+              <label class="editor-field">Непрозрачность подложки, %
+                <input id="obs-backdrop-opacity" class="field" type="number" min="0" max="100" step="5" value="90" />
+              </label>
+              <label class="editor-field">Порт
+                <input id="obs-port" class="field" type="number" min="1024" max="65535" step="1" value="8765" />
+              </label>
+              <button type="button" class="show-btn" id="obs-settings-save">Сохранить настройки</button>
+            </div>
+            <div class="obs-url-row">
+              <label class="editor-field grow">Адрес для источника «Браузер»
+                <input id="obs-url" class="field" type="text" readonly />
+              </label>
+              <button type="button" class="tool-btn" id="obs-copy-url">Скопировать</button>
+            </div>
+            <p class="hint" id="obs-urls"></p>
+            <p class="hint" id="obs-status">Вывод выключен — слова в OBS не уходят.</p>
+          </div>
           </div>
 
           <!-- Интерфейс -->
@@ -599,12 +640,54 @@
           <div class="settings-panel" data-settings-panel="backups" hidden>
             <div class="settings-block">
               <h2 class="settings-title">Резервные копии</h2>
-              <p class="hint">Сохраните копию базы или восстановите данные из ранее созданного файла.</p>
-              <div class="toolbar-row database-actions">
-                <button type="button" class="tool-btn" id="backup-database">Создать резервную копию</button>
+              <p class="hint">
+                Локальная копия сохраняется в выбранный файл, облачная — отправляется на
+                Яндекс.Диск. Восстановление заменяет текущие данные содержимым выбранной копии.
+              </p>
+              <div class="backup-actions">
+                <button type="button" class="show-btn" id="backup-database">Создать локальную копию</button>
+                <button type="button" class="show-btn" id="yandex-backup">Создать копию на Яндекс.Диске</button>
                 <button type="button" class="tool-btn" id="restore-database">Восстановить из копии</button>
               </div>
             </div>
+            <details class="settings-block settings-spoiler" id="yandex-settings">
+              <summary class="settings-spoiler-head">
+                <span class="settings-title">Настройки Яндекс.Диска</span>
+                <span class="hint" id="yandex-state">Токен не сохранён</span>
+              </summary>
+              <div class="settings-spoiler-body">
+                <p class="hint">
+                  Получите Client ID, пройдя по ссылке <a href="https://oauth.yandex.ru/">OAuth.yandex.ru</a>, и вставьте его в соответствующее поле. Далее нажмите «Получить токен»: откроется страница Яндекса, где токен показан прямо в ответе — разрешите доступ, скопируйте токен в поле «OAuth-токен» и нажмите «Сохранить настройки».
+                </p>
+                <div class="yandex-form">
+                  <label class="editor-field">
+                    Client ID приложения
+                    <input id="yandex-client-id" class="field" type="text" autocomplete="off" placeholder="например 8f1c2d3e4a5b6c7d" />
+                  </label>
+                  <label class="editor-field">
+                    OAuth-токен Яндекс.Диска
+                    <input id="yandex-token" class="field" type="text" autocomplete="off" spellcheck="false" data-secret="true" placeholder="y0_AgAAAA…" />
+                  </label>
+                  <button type="button" class="tool-btn yandex-btn" id="yandex-token-page">Получить токен</button>
+                  <button type="button" class="tool-btn yandex-btn" id="yandex-token-check">Проверить токен</button>
+                  <label class="editor-field">
+                    Название папки на Диске
+                    <input id="yandex-folder" class="field" type="text" autocomplete="off" placeholder="ChyguiSlide" />
+                  </label>
+                  <label class="editor-field">
+                    Количество хранимых копий
+                    <input id="yandex-keep" class="field" type="number" min="0" max="200" step="1" value="10" />
+                  </label>
+                  <button type="button" class="show-btn yandex-wide" id="yandex-settings-save">Сохранить настройки</button>
+                  <button type="button" class="tool-btn yandex-btn yandex-wide" id="yandex-open-folder">Открыть папку с копиями на Диске</button>
+                </div>
+                <p class="hint">
+                  Копии лежат в папке приложения на Яндекс.Диске: раздел «Приложения» → папка с именем
+                  вашего приложения → «имя папки/backups». Открывайте её можно кнопкой «Открыть папку с копиями на Диске».
+                </p>
+                <p class="hint" id="yandex-status">Токен не сохранён — нажмите «Получить токен».</p>
+              </div>
+            </details>
           </div>
 
           <!-- Журнал работы приложения -->

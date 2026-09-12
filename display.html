@@ -9,11 +9,15 @@
     <script type="module" src="/src/display/main.ts"></script>
   </head>
   <body>
-    <div id="layer-bg" class="layer"></div>
-    <div id="layer-overlay" class="layer"></div>
-    <div id="layer-text" class="layer">
-      <div id="text-a" class="text-pane"></div>
-      <div id="text-b" class="text-pane"></div>
+    <!-- Главный контейнер кадра: в нём лежат все слои вывода. Проявление и
+         угасание всей трансляции идёт только через его прозрачность. -->
+    <div id="display-root">
+      <div id="layer-bg" class="layer"></div>
+      <div id="layer-overlay" class="layer"></div>
+      <div id="layer-text" class="layer">
+        <div id="text-a" class="text-pane"></div>
+        <div id="text-b" class="text-pane"></div>
+      </div>
     </div>
   </body>
 </html>

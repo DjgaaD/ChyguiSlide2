@@ -196,13 +196,18 @@ function handleClick(event: MouseEvent) {
   logInfo("click", describeElement(interactiveAncestor(event.target)));
 }
 
+/** Поля, значения которых в журнал не попадают: пароли и поля с `data-secret`. */
+function isSecretField(element: Element & { type?: string }): boolean {
+  return element.type === "password" || element.hasAttribute("data-secret");
+}
+
 function handleChange(event: Event) {
   const element = event.target as HTMLInputElement | null;
   if (!element || typeof element.tagName !== "string") {
     return;
   }
   let value: unknown = element.value;
-  if (element.type === "password") {
+  if (isSecretField(element)) {
     value = "<скрыто>";
   } else if (element.type === "checkbox" || element.type === "radio") {
     value = element.checked;

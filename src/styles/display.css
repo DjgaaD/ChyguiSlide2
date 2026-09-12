@@ -31,6 +31,22 @@ html.preview-frame body {
   inset: 0;
 }
 
+/* Главный контейнер кадра (фон + оверлей + текст). По умолчанию он непрозрачен,
+   а плавность обеспечивает переход прозрачности: показ начинается и заканчивается
+   именно им (см. .fade-out). */
+#display-root {
+  position: absolute;
+  inset: 0;
+  opacity: 1;
+  transition: opacity 0.4s ease-in-out;
+}
+
+/* Прозрачное состояние контейнера: кадр погашен. Такой класс остаётся на экране
+   после очистки — новый контент готовится в нём и проявляется снятием класса. */
+.fade-out {
+  opacity: 0 !important;
+}
+
 #layer-bg {
   z-index: 1;
   background: linear-gradient(180deg, #141414 0%, #000 100%);
@@ -65,6 +81,9 @@ html.preview-frame body {
 #layer-text {
   z-index: 3;
   pointer-events: none;
+  /* Слой текста гасится отдельно: при очистке только текста медиа продолжает
+     играть, поэтому «очистить» не должно трогать весь кадр. */
+  transition: opacity 0.4s ease-in-out;
 }
 
 .text-pane {
@@ -133,14 +152,22 @@ html.preview-frame body {
   margin-top: 0.18em;
 }
 
-/* Подпись библейского стиха (ссылка/номер) */
+/* Подпись библейского стиха (ссылка/номер).
+   Подпись — часть слайда, а не служебная сноска: она наследует шрифт, цвет,
+   обводку и тень темы так же, как основной текст, и лишь немного уступает ему
+   по размеру (90% от него). Тень берётся из отдельной переменной: если в теме
+   обводки нет, подпись всё равно не должна теряться на фоне. */
 .bible-caption {
-  font-size: 0.5em;
-  font-weight: 400;
-  letter-spacing: 0.03em;
-  opacity: 0.85;
-  text-shadow: var(--sl-text-shadow, 0 2px 12px rgba(0, 0, 0, 0.65));
-  -webkit-text-stroke: none;
+  font-family: inherit;
+  font-weight: var(--sl-font-weight, 600);
+  color: inherit;
+  font-size: 0.9em;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  opacity: 1;
+  -webkit-text-stroke: var(--sl-stroke, none);
+  text-shadow: var(--sl-caption-shadow, 0 2px 12px rgba(0, 0, 0, 0.75));
+  overflow-wrap: anywhere;
 }
 
 .bible-caption.pos-above {
@@ -154,7 +181,6 @@ html.preview-frame body {
 .bible-caption.pos-inline-start,
 .bible-caption.pos-inline-end {
   display: inline-block;
-  font-size: 0.55em;
   vertical-align: baseline;
 }
 
@@ -166,14 +192,16 @@ html.preview-frame body {
   margin-left: 0.55em;
 }
 
+/* Подписи, прибитые к краям экрана: они вне потока слайда, поэтому «em» от
+   автофита им не достаётся — размер приходит переменной --sl-caption-px. */
 .bible-caption.pos-screen-top,
 .bible-caption.pos-corner-left,
 .bible-caption.pos-corner-right,
 .bible-caption.pos-screen-bottom-left,
 .bible-caption.pos-screen-bottom-right {
   position: absolute;
-  max-width: 40vw;
-  font-size: clamp(14px, 1.9vw, 30px);
+  max-width: 46vw;
+  font-size: clamp(18px, var(--sl-caption-px, 2.6vw), 72px);
   line-height: 1.2;
 }
 

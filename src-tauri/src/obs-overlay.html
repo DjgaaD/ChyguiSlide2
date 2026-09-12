@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  Оверлей для OBS (источник «Браузер»). Страница отдаётся сервером вывода
+  (src-tauri/src/obs.rs) по адресу вида http://127.0.0.1:8765/ и получает текст
+  слайда потоком событий. Фон прозрачный: в OBS видно только слова поверх видео.
+
+  Параметры строки запроса (необязательные):
+    ?w=1920&h=1080  — фиксированный размер сцены (иначе размер окна источника);
+    ?backdrop=0.4   — подложка под текст, доля непрозрачности (0…1 или 0…100 %).
+                      Параметр сильнее настройки «Вывод слов в OBS».
+
+  Текст приходит одной строкой: оверлей сам переносит её по ширине источника и
+  подбирает размер шрифта так, чтобы слова занимали источник целиком (как в
+  прежней версии программы).
+-->
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ChyguiSlide — вывод в OBS</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        color: var(--text-color, #f5f2ea);
+        font-family: var(--font-family, "Segoe UI", sans-serif);
+        font-weight: var(--font-weight, 600);
+      }
+
+      /* Подложка: цвет берём из активного стиля, непрозрачность — из настроек
+         вывода (или из параметра ?backdrop=). Появляется только под текстом. */
+      #backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: #000000;
+        opacity: 0;
+        transition: opacity 0.4s ease-in-out;
+        pointer-events: none;
+      }
+
+      #backdrop.on {
+        opacity: var(--backdrop-opacity, 0.9);
+      }
+
+      /* Кадр оверлея: старт и финиш показа идут через его прозрачность. */
+      #stage {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        overflow: hidden;
+        opacity: 1;
+        transition: opacity 0.4s ease-in-out;
+      }
+
+      #stage.fade-out {
+        opacity: 0 !important;
+      }
+
+      /* Слой со словами слайда: текст заполняет источник целиком, отступ задаёт
+         автофит (см. obs-overlay.js), а не padding — иначе остаётся пустое место. */
+      .text-layer {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        box-sizing: border-box;
+        opacity: 0;
+        text-align: var(--align, center);
+        will-change: opacity;
+      }
+
+      .text-layer.visible {
+        opacity: 1;
+      }
+
+      .slide-text {
+        width: 100%;
+        max-width: 100%;
+        font-size: 100px;
+        line-height: 1.2;
+        overflow-wrap: break-word;
+        word-wrap: break-word;
+        hyphens: auto;
+        text-shadow: var(--text-shadow, none);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="backdrop"></div>
+    <div id="stage">
+      <div id="layer-a" class="text-layer"></div>
+      <div id="layer-b" class="text-layer"></div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1205,6 +1205,12 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Resul
     Ok(())
 }
 
+/// Удаляет настройку (например, забытый токен внешнего сервиса).
+pub fn delete_setting(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
 /// Полностью синхронизирует привязки: переданный список — источник истины.
 pub fn save_hotkeys(conn: &Connection, bindings: &[HotkeyRow]) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;

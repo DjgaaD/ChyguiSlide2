@@ -2,6 +2,7 @@ import { emitTo, invoke, listen } from "../shared/ipc";
 import { logInfo, logWarn } from "../shared/logger";
 import { EVENTS, PREVIEW_CHANNEL } from "../shared/events";
 import { postToPreview } from "./preview-frame";
+import { mirrorEventToObs } from "./obs";
 
 const DISPLAY = "display";
 const READY_TIMEOUT_MS = 8000;
@@ -135,6 +136,9 @@ export async function ensureDisplayReady(): Promise<void> {
 
 export async function sendToDisplay<T>(event: string, payload: T): Promise<void> {
   console.log("[show] sendToDisplay start", event, payload);
+  // OBS получает те же команды, что и окно вывода (текст, оформление, очистка):
+  // слова в трансляции не зависят от того, успело ли открыться окно Display.
+  mirrorEventToObs(event, payload);
   await ensureDisplayReady();
   console.log("[show] → emitTo", DISPLAY, event);
   try {

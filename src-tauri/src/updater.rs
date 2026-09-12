@@ -421,7 +421,7 @@ fn install_update(
 /// «Cannot drop a runtime in a context where blocking is not allowed»
 /// обрывает команду, и интерфейс не получает ответ. Обычный поток такого
 /// контекста не имеет, поэтому вся сеть и распаковка идут здесь.
-fn run_blocking<T, F>(job: F) -> Result<T, String>
+pub(crate) fn run_blocking<T, F>(job: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,

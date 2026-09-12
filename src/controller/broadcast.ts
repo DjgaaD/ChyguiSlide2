@@ -84,6 +84,12 @@ const quickVideoChecking = new Set<string>();
 const quickVideoConverting = new Set<string>();
 const quickVideoProgress = new Map<string, number>();
 
+/**
+ * Время плавного гашения кадра в окне вывода (см. `#display-root` в display.css):
+ * столько ждём перед закрытием окна, иначе финал показа обрывается.
+ */
+const DISPLAY_FADE_MS = 400;
+
 function $(sel: string): HTMLElement {
   const el = document.querySelector<HTMLElement>(sel);
   if (!el) {
@@ -599,6 +605,9 @@ async function endShow() {
     console.warn("[show] end clear failed", err);
   });
   if (!textOnly) {
+    // Даём окну вывода погасить кадр (fade-out в display.css), иначе финал
+    // показа обрывается мгновенным закрытием окна.
+    await new Promise((resolve) => window.setTimeout(resolve, DISPLAY_FADE_MS));
     await closeDisplayWindow();
     pendingMedia = null;
     liveHasMedia = false;
