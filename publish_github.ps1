@@ -10,6 +10,9 @@
       5. публикует Update.md, README.md и install.ps1 в репозиторий;
       6. проверяет, что файл релиза и документация скачиваются анонимно.
 
+    Файлы, уже загруженные в релиз с тем же размером, повторно не загружаются:
+    повторный запуск после сбоя не тратит трафик.
+
     Нужен GitHub CLI (https://cli.github.com), авторизованный в нужном аккаунте:
     gh auth status. Токен нигде в проекте не хранится — gh держит его у себя.
 
@@ -67,18 +70,65 @@ $configPath = Join-Path $root 'src-tauri\tauri.conf.json'
 
 # --- Вспомогательные функции -------------------------------------------------
 
-# Запуск gh: возвращает код возврата и строки вывода.
+# Запуск внешней программы. PowerShell считает вывод в stderr ошибкой, а gh и git
+# пишут туда обычные сообщения («release not found», ход отправки), поэтому на
+# время вызова переключаем режим обработки ошибок.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $FilePath @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    return [pscustomobject]@{ Code = $code; Output = @($output) }
+}
+
+# Запуск gh: возвращает код возврата и строки вывода. Соединение с GitHub иногда
+# обрывается (TLS handshake timeout, 5xx), поэтому повторяем попытку.
 function Invoke-Gh {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [int]$Attempts = 3
     )
-    $output = & gh @Arguments 2>&1
-    $code = $LASTEXITCODE
-    if ($code -ne 0 -and -not $AllowFailure) {
-        throw "gh $($Arguments -join ' ') завершился с кодом ${code}:`n$($output -join "`n")"
+    $result = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $result = Invoke-Native -FilePath 'gh' -Arguments $Arguments
+        if ($result.Code -eq 0) { return $result }
+        $text = $result.Output -join "`n"
+        $transient = $text -match 'timeout|timed out|connection reset|connection refused|EOF|502|503|504|temporarily unavailable'
+        if (-not $transient -or $attempt -eq $Attempts) { break }
+        Write-Host "      попытка $attempt не удалась (сеть), повторяю через 5 с"
+        Start-Sleep -Seconds 5
     }
-    return [pscustomobject]@{ Code = $code; Output = @($output) }
+    if ($result.Code -ne 0 -and -not $AllowFailure) {
+        throw "gh $($Arguments -join ' ') завершился с кодом $($result.Code):`n$($result.Output -join "`n")"
+    }
+    return $result
+}
+
+# Чтение файла репозитория по анонимной ссылке: та же причина для повторов.
+function Get-RawText {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [int]$Attempts = 3
+    )
+    $note = 'нет ответа'
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            return (Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60).Content
+        } catch {
+            $note = $_.Exception.Message
+            if ($attempt -lt $Attempts) { Start-Sleep -Seconds 5 }
+        }
+    }
+    throw "Не удалось прочитать $Url`: $note"
 }
 
 # Строка JSON в кавычках: так экранируются кавычки и переводы строк.
@@ -148,20 +198,26 @@ function Publish-Docs {
     )
     $relative = @($Paths | ForEach-Object { $_.Substring($root.Length + 1) })
 
-    $inside = & git rev-parse --is-inside-work-tree 2>$null
-    if ($LASTEXITCODE -eq 0 -and "$inside".Trim() -eq 'true') {
-        & git add -- $relative
-        if ($LASTEXITCODE -ne 0) { throw 'git add не удался.' }
-        $pending = @(& git status --porcelain -- $relative)
-        if ($pending.Count -gt 0) {
-            & git commit -m $Message
-            if ($LASTEXITCODE -ne 0) { throw 'git commit не удался.' }
+    $inside = Invoke-Native -FilePath 'git' -Arguments @('rev-parse', '--is-inside-work-tree')
+    if ($inside.Code -eq 0 -and (($inside.Output -join '') -replace '\s', '') -eq 'true') {
+        $add = Invoke-Native -FilePath 'git' -Arguments (@('add', '--') + $relative)
+        if ($add.Code -ne 0) {
+            throw "git add не удался:`n$($add.Output -join "`n")"
+        }
+
+        $pending = Invoke-Native -FilePath 'git' -Arguments (@('status', '--porcelain', '--') + $relative)
+        if ($pending.Output.Count -gt 0) {
+            $commit = Invoke-Native -FilePath 'git' -Arguments @('commit', '-m', $Message)
+            if ($commit.Code -ne 0) {
+                throw "git commit не удался:`n$($commit.Output -join "`n")"
+            }
         } else {
             Write-Host '      изменения уже закоммичены'
         }
-        & git push
-        if ($LASTEXITCODE -ne 0) {
-            throw 'git push не удался — проверьте доступ к репозиторию (gh auth setup-git).'
+
+        $push = Invoke-Native -FilePath 'git' -Arguments @('push')
+        if ($push.Code -ne 0) {
+            throw "git push не удался — проверьте доступ к репозиторию (gh auth setup-git):`n$($push.Output -join "`n")"
         }
         Write-Host '      документация отправлена в репозиторий (git push)'
         return
@@ -332,9 +388,25 @@ if ($SkipRelease) {
         Write-Host "      релиз $tag создан"
     }
 
-    Write-Host "      загрузка файлов: $($releaseFiles.Name -join ', ')"
-    $uploadPaths = @($releaseFiles | ForEach-Object { $_.FullName })
-    Invoke-Gh -Arguments (@('release', 'upload', $tag, '-R', $repoFull, '--clobber') + $uploadPaths) | Out-Null
+    # Файлы, уже загруженные в релиз с тем же размером, не загружаем снова: так
+    # повторный запуск после сбоя не тратит трафик.
+    $releaseJson = ((Invoke-Gh -Arguments @('api', "repos/$repoFull/releases/tags/$tag")).Output) -join "`n"
+    $uploaded = @{}
+    foreach ($asset in ($releaseJson | ConvertFrom-Json).assets) { $uploaded[$asset.name] = $asset }
+
+    $toUpload = @()
+    foreach ($file in $releaseFiles) {
+        if ($uploaded.ContainsKey($file.Name) -and [int64]$uploaded[$file.Name].size -eq $file.Length) {
+            Write-Host "      $($file.Name): уже в релизе, размер совпал — загрузка не нужна"
+        } else {
+            $toUpload += $file
+        }
+    }
+    if ($toUpload.Count -gt 0) {
+        Write-Host "      загрузка файлов: $($toUpload.Name -join ', ')"
+        $uploadPaths = @($toUpload | ForEach-Object { $_.FullName })
+        Invoke-Gh -Arguments (@('release', 'upload', $tag, '-R', $repoFull, '--clobber') + $uploadPaths) | Out-Null
+    }
 
     # Ссылки берём из ответа GitHub — это ровно те адреса, которые скачает программа.
     $releaseJson = ((Invoke-Gh -Arguments @('api', "repos/$repoFull/releases/tags/$tag")).Output) -join "`n"
@@ -437,27 +509,29 @@ if (-not $SkipDocs) {
     # Приписка в адресе обходит кэш CDN: сразу после публикации он ещё отдаёт
     # прежнюю копию файла.
     $cacheBuster = [DateTime]::UtcNow.Ticks
-    $updateResponse = Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/Update.md?cache=$cacheBuster" -TimeoutSec 60
-    if (-not $updateResponse.Content.Contains($marker)) {
+    $updateText = Get-RawText -Url "$rawBase/Update.md?cache=$cacheBuster"
+    if (-not $updateText.Contains($marker)) {
         throw "В опубликованном Update.md нет блока манифеста — проверьте $rawBase/Update.md."
     }
-    if ($updateResponse.Content -notmatch [regex]::Escape("`"version`": `"$Version`"")) {
+    if ($updateText -notmatch [regex]::Escape("`"version`": `"$Version`"")) {
         throw "В опубликованном Update.md нет версии $Version — возможно, отдаётся старая копия."
     }
     Write-Host "      Update.md: $rawBase/Update.md — версия $Version на месте"
 
-    $readmeResponse = Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/README.md?cache=$cacheBuster" -TimeoutSec 60
-    if ($readmeResponse.Content.Contains($marker)) {
+    $readmeText = Get-RawText -Url "$rawBase/README.md?cache=$cacheBuster"
+    if ($readmeText.Contains($marker)) {
         throw 'В опубликованном README.md остался блок манифеста — он должен лежать только в Update.md.'
     }
     Write-Host '      README.md: описание программы без блока манифеста'
 
     $installUrl = "$rawBase/install.ps1?cache=$cacheBuster"
-    $installResponse = Invoke-WebRequest -UseBasicParsing -Uri $installUrl -TimeoutSec 60
-    if ($installResponse.Content -match '<!DOCTYPE|<html') {
+    $installText = Get-RawText -Url $installUrl
+    # Ищем страницу только в самом начале файла: строку с <html скрипт содержит
+    # в собственном коде разбора ответа.
+    if ($installText.TrimStart() -match '^(<!DOCTYPE|<html)') {
         throw "install.ps1 по адресу $installUrl отдаётся как страница, а не как файл."
     }
-    if (-not $installResponse.Content.Contains('CHYGUISLIDE-UPDATE')) {
+    if (-not $installText.Contains('CHYGUISLIDE-UPDATE')) {
         throw 'В опубликованном install.ps1 нет разбора блока манифеста — скачался не тот файл.'
     }
     Write-Host '      install.ps1: скрипт установки на месте'
@@ -474,7 +548,17 @@ if ($VerifyDownload) {
         try {
             foreach ($file in $releaseFiles) {
                 $partPath = Join-Path $temp $file.Name
-                Invoke-WebRequest -UseBasicParsing -Uri $assetUrls[$file.Name] -OutFile $partPath -TimeoutSec 3600
+                $downloaded = $false
+                for ($attempt = 1; $attempt -le 3 -and -not $downloaded; $attempt++) {
+                    try {
+                        Invoke-WebRequest -UseBasicParsing -Uri $assetUrls[$file.Name] -OutFile $partPath -TimeoutSec 3600
+                        $downloaded = $true
+                    } catch {
+                        if ($attempt -eq 3) { throw }
+                        Write-Host "      скачивание не удалось, повторяю: $($_.Exception.Message)"
+                        Start-Sleep -Seconds 10
+                    }
+                }
                 $in = [System.IO.File]::OpenRead($partPath)
                 try {
                     if ($file.Name -like '*.gz') {
