@@ -79,8 +79,11 @@ pub(crate) fn open_url(url: &str) -> Result<(), String> {
 }
 
 /// Строка UTF-16 с завершающим нулём — в таком виде Win32-функции принимают текст.
+///
+/// Используется и в модуле обновления: установщик запускается через
+/// `ShellExecuteExW`, которому нужны такие же строки.
 #[cfg(windows)]
-fn wide(value: &str) -> Vec<u16> {
+pub(crate) fn wide(value: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
 
     std::ffi::OsStr::new(value)

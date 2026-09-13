@@ -1773,6 +1773,8 @@ type UpdateStatus = {
   sha256: string | null;
   sizeBytes: number | null;
   error: string | null;
+  /** Каталог программы защищён: установка запросит права администратора. */
+  needsElevation: boolean;
 };
 
 type UpdateProgress = { downloaded: number; total: number | null; percent: number | null };
@@ -1885,6 +1887,15 @@ function openUpdateDialog(status: UpdateStatus) {
   if (published) {
     published.hidden = !status.publishedAt;
     published.textContent = status.publishedAt ? `Опубликовано: ${status.publishedAt}` : "";
+  }
+  // В «C:\Program Files» тихая установка ничего не заменит без прав
+  // администратора — предупреждаем до скачивания, а не после отказа в UAC.
+  const elevation = document.getElementById("update-elevation");
+  if (elevation) {
+    elevation.hidden = !status.needsElevation;
+    elevation.textContent = status.needsElevation
+      ? "Программа установлена в защищённую папку — при обновлении Windows запросит права администратора."
+      : "";
   }
   renderUpdateNotes(status.notes);
   updateDialog().showModal();

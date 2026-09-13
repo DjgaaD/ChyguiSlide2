@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "chyguislide"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "reqwest 0.12.28",

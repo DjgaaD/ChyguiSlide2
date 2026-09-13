@@ -72,6 +72,9 @@ pub fn run() {
             obs::start_from_settings(&handle);
             // Диагностика внешних бинарников: наличие, размер и PE-подпись (MZ).
             commands::log_sidecars(&handle);
+            // Файлы прошлого обновления (скачанная часть и установщик) в кэше
+            // больше не нужны: их удаление идёт в фоне и не задерживает запуск.
+            updater::cleanup_staging(&handle);
             logger::info("app", "инициализация завершена");
             // Display opens on demand (show / persistent second-screen background).
             Ok(())

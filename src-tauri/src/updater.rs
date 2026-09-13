@@ -62,6 +62,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Событие с прогрессом скачивания для интерфейса.
 const PROGRESS_EVENT: &str = "update-progress";
+/// Имя каталога для файлов обновления внутри кэша приложения.
+const STAGING_NAME: &str = "updates";
+/// Сколько раз пробовать удалить файлы прошлого обновления. Файл установщика
+/// занят, пока он работает, поэтому попытки повторяются с паузой.
+const CLEANUP_ATTEMPTS: u32 = 12;
+/// Пауза между попытками очистки кэша обновления.
+const CLEANUP_DELAY: Duration = Duration::from_millis(700);
 
 /// Описание доступной версии (блок JSON из `Update.md` или `update.json`).
 #[derive(Debug, Clone, Deserialize)]
@@ -105,6 +112,10 @@ pub struct UpdateStatus {
     pub sha256: Option<String>,
     pub size_bytes: Option<u64>,
     pub error: Option<String>,
+    /// Каталог программы защищён (`C:\Program Files` и подобные): установщик
+    /// придётся запускать с правами администратора, иначе тихая установка молча
+    /// ничего не заменит.
+    pub needs_elevation: bool,
 }
 
 impl UpdateStatus {
@@ -123,6 +134,7 @@ impl UpdateStatus {
             sha256: None,
             size_bytes: None,
             error: Some(error),
+            needs_elevation: !install_dir_writable(),
         }
     }
 }
@@ -247,6 +259,7 @@ fn build_update_status(app: &AppHandle, force: bool, current_version: &str) -> U
         sha256: None,
         size_bytes: None,
         error: None,
+        needs_elevation: !install_dir_writable(),
     };
 
     let manifest = match fetch_manifest() {
@@ -379,11 +392,24 @@ fn install_update(
         &format!("скачивание обновления: файлов — {}", sources.len()),
     );
     let dir = staging_dir(app)?;
+    // Файлы прошлого обновления в кэше не нужны: место занимает новое.
+    let freed = clear_staging_dir(&dir);
+    if freed > 0 {
+        logger::info(
+            "update",
+            &format!("кэш обновления очищен: освобождено {}", format_size(freed)),
+        );
+    }
     let downloaded = download_all(app, &sources, &dir)?;
 
     let archive = dir.join("update.bin");
     let actual = assemble_archive(&downloaded, &archive)?;
     logger::info("update", &format!("обновление собрано: {}", archive.display()));
+    // Скачанные части своё отдали: установщик собран, а места они занимают
+    // столько же, сколько и он сам.
+    for part in &downloaded {
+        let _ = std::fs::remove_file(part);
+    }
     if let Some(expected) = sha256.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         if !expected.eq_ignore_ascii_case(&actual) {
             let _ = std::fs::remove_file(&archive);
@@ -501,10 +527,103 @@ fn staging_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_cache_dir()
         .map_err(|error| format!("не удалось определить каталог кэша: {error}"))?
-        .join("updates");
+        .join(STAGING_NAME);
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("не удалось создать {}: {error}", dir.display()))?;
     Ok(dir)
+}
+
+/// Размер файла или каталога со всем содержимым, в байтах.
+fn path_size(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| path_size(&entry.path()))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Удаляет из каталога обновления всё, что в нём осталось, и возвращает число
+/// освобождённых байт.
+///
+/// В каталоге лежат только файлы обновления, поэтому удаляется всё без разбора.
+/// Занятый файл (установщик ещё работает) останется: сбой удаления здесь не
+/// считается ошибкой, его разбирает вызывающий код.
+fn clear_staging_dir(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut freed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let size = path_size(&path);
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path).is_ok()
+        } else {
+            std::fs::remove_file(&path).is_ok()
+        };
+        if removed {
+            freed += size;
+        }
+    }
+    freed
+}
+
+/// Убирает из кэша файлы прошлого обновления.
+///
+/// После установки в каталоге остаются скачанная часть и сам установщик —
+/// больше 500 МБ, которые иначе лежат там до следующего обновления. Очистка
+/// идёт в отдельном потоке: пока установщик работает, его файл занят, поэтому
+/// попытки повторяются, а запуск приложения из-за этого не задерживается.
+pub(crate) fn cleanup_staging(app: &AppHandle) {
+    let Ok(dir) = staging_dir(app) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        for attempt in 1..=CLEANUP_ATTEMPTS {
+            let before = path_size(&dir);
+            if before == 0 {
+                return;
+            }
+            let freed = clear_staging_dir(&dir);
+            let left = before.saturating_sub(freed);
+            if left == 0 {
+                logger::info(
+                    "update",
+                    &format!(
+                        "файлы прошлого обновления удалены: освобождено {}",
+                        format_size(freed)
+                    ),
+                );
+                return;
+            }
+            if attempt == CLEANUP_ATTEMPTS {
+                logger::warn(
+                    "update",
+                    &format!(
+                        "не удалось удалить файлы прошлого обновления из {}: осталось {}",
+                        dir.display(),
+                        format_size(left)
+                    ),
+                );
+                return;
+            }
+            std::thread::sleep(CLEANUP_DELAY);
+        }
+    });
+}
+
+/// Размер в журнале: «532.0 МБ» — как в интерфейсе (`formatBytes`).
+fn format_size(bytes: u64) -> String {
+    format!("{:.1} МБ", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// Скачивает все файлы обновления во временный каталог, сообщая общий прогресс.
@@ -709,21 +828,149 @@ fn find_installer(dir: &Path, depth: usize) -> Option<PathBuf> {
     nested.iter().find_map(|path| find_installer(path, depth + 1))
 }
 
+/// Имя пробного файла, которым проверяется запись в каталог программы.
+const WRITE_PROBE: &str = ".update-write-test";
+
+/// Каталог, где лежит сама программа: его и заменяет установщик.
+fn install_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Можно ли писать в каталог: пробный файл создаётся и сразу удаляется.
+fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(WRITE_PROBE);
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Можно ли заменить файлы программы на месте.
+///
+/// В `C:\Program Files\…` обычный пользователь писать не может, а установщик
+/// собирается в режиме `currentUser` и прав не запрашивает: тихая установка там
+/// завершается «успешно», но не заменяет ни одного файла — программа остаётся
+/// старой версии, а реестр при этом получает новую. Поэтому каталог проверяется
+/// пробным файлом, а результат запоминается на запуск: каталог программы не
+/// меняется, а проверка трогает диск.
+fn install_dir_writable() -> bool {
+    static WRITABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WRITABLE.get_or_init(|| install_dir().map(|dir| dir_writable(&dir)).unwrap_or(false))
+}
+
+/// Аргументы установщика Tauri NSIS в тихом режиме.
+///
+/// `/S` — без окон и вопросов, `/UPDATE` — обновление поверх текущей версии
+/// (данные пользователя сохраняются), `/R` — перезапустить приложение после
+/// установки, `/D=<каталог>` — ставить туда, где программа работает сейчас.
+///
+/// Каталог передаётся явно, потому что своё прежнее место установки установщик
+/// берёт из реестра и пишет туда же даже при неудачной установке: запись может
+/// указывать на каталог, куда файлы так и не попали. `/D=` NSIS принимает
+/// только последним аргументом и без кавычек, поэтому строка собирается вручную
+/// и отдаётся оболочке целиком (см. `run_installer_windows`).
+fn installer_arguments(dir: &Path) -> String {
+    format!("/S /UPDATE /R /D={}", dir.display())
+}
+
 /// Запускает установщик Tauri NSIS в тихом режиме.
 ///
-/// Флаги установщика: `/S` — без окон и вопросов, `/UPDATE` — обновление
-/// поверх текущей версии (данные пользователя сохраняются), `/R` —
-/// перезапустить приложение после установки.
+/// Если каталог программы защищён (например, `C:\Program Files`), установщик
+/// запускается с запросом прав администратора: без них он не сможет заменить
+/// файлы и молча завершится ни с чем. Отказ от запроса прав — ошибка: закрывать
+/// приложение, ничего не установив, нельзя.
 fn launch_installer(installer: &Path) -> Result<(), String> {
-    let mut command = std::process::Command::new(installer);
-    command.args(["/S", "/UPDATE", "/R"]);
-    if let Some(parent) = installer.parent() {
-        command.current_dir(parent);
+    let Some(dir) = install_dir() else {
+        return Err("не удалось определить каталог программы".to_string());
+    };
+    let arguments = installer_arguments(&dir);
+    let elevate = !install_dir_writable();
+    if elevate {
+        logger::info(
+            "update",
+            &format!("каталог программы защищён: установка с запросом прав администратора | {arguments}"),
+        );
+    } else {
+        logger::info(
+            "update",
+            &format!("каталог программы доступен для записи: установка без запроса прав | {arguments}"),
+        );
     }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("не удалось запустить установщик: {error}"))
+    run_installer(installer, &arguments, elevate)
+}
+
+/// Запускает установщик с аргументами; `elevate` — с запросом прав (UAC).
+fn run_installer(installer: &Path, arguments: &str, elevate: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        run_installer_windows(installer, arguments, elevate)
+    }
+    #[cfg(not(windows))]
+    {
+        // Приложение собирается для Windows: ветка нужна, чтобы код собирался
+        // и на других системах, где установщика NSIS нет.
+        let _ = (arguments, elevate);
+        std::process::Command::new(installer)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("не удалось запустить установщик: {error}"))
+    }
+}
+
+/// Запускает установщик средствами оболочки Windows.
+///
+/// `ShellExecuteExW` берётся вместо `Command`, потому что аргументы должны дойти
+/// до NSIS без кавычек (`/D=` их не принимает), а с глаголом `runas` Windows
+/// показывает запрос прав администратора и ждёт ответа: отказ виден как
+/// `ERROR_CANCELLED`, и тогда приложение остаётся открытым. Флаг
+/// `SEE_MASK_FLAG_NO_UI` убирает собственные окна оболочки — об ошибке сообщает
+/// само приложение.
+#[cfg(windows)]
+fn run_installer_windows(installer: &Path, arguments: &str, elevate: bool) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
+        SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    use crate::opener::wide;
+
+    let verb = wide(if elevate { "runas" } else { "open" });
+    let file = wide(&installer.to_string_lossy());
+    let parameters = wide(arguments);
+    let directory = wide(&installer.parent().unwrap_or(Path::new(".")).to_string_lossy());
+
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.lpVerb = verb.as_ptr();
+    info.lpFile = file.as_ptr();
+    info.lpParameters = parameters.as_ptr();
+    info.lpDirectory = directory.as_ptr();
+    info.nShow = SW_SHOWNORMAL;
+
+    let started = unsafe { ShellExecuteExW(&mut info) };
+    if started == 0 {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_CANCELLED {
+            return Err("обновление отменено: запрос прав администратора отклонён. \
+                 Новую версию можно поставить вручную — установщик есть в описании обновления."
+                .to_string());
+        }
+        return Err(format!(
+            "не удалось запустить установщик (ошибка Windows {code})"
+        ));
+    }
+    if !info.hProcess.is_null() {
+        unsafe { CloseHandle(info.hProcess) };
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -742,6 +989,74 @@ mod tests {
         assert!(!is_newer("мусор", "0.1.0"));
         assert!(!is_newer("0.2.0", "мусор"));
     }
+
+    /// Проверка записи в каталог: в свой каталог пробный файл создаётся и
+    /// удаляется, в несуществующий — нет. На этой проверке держится решение
+    /// запускать установщик с правами администратора: в `C:\Program Files`
+    /// тихая установка без прав молча не заменяет ни одного файла.
+    #[test]
+    fn write_probe_reports_writable_directory() {
+        let dir = std::env::temp_dir().join("chyguislide-write-probe-test");
+        std::fs::create_dir_all(&dir).expect("каталог создаётся");
+        assert!(dir_writable(&dir), "в свой каталог писать можно");
+        assert!(
+            !dir.join(WRITE_PROBE).exists(),
+            "пробный файл после проверки удаляется"
+        );
+        assert!(
+            !dir_writable(&dir.join("нет-такого-каталога")),
+            "в несуществующий каталог писать нельзя"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Очистка кэша обновления: удаляются и скачанные части, и распакованный
+    /// установщик, а освобождённый объём считается по размеру файлов. На этом
+    /// держится обещание не оставлять в кэше полгигабайта после обновления.
+    #[test]
+    fn staging_cleanup_removes_leftover_files() {
+        let dir = std::env::temp_dir().join("chyguislide-staging-cleanup-test");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("unpacked")).expect("каталог создаётся");
+        std::fs::write(dir.join("part1.download"), vec![0u8; 2048]).expect("часть записывается");
+        std::fs::write(dir.join("update.exe"), vec![0u8; 1024]).expect("установщик записывается");
+        std::fs::write(dir.join("unpacked").join("setup.exe"), vec![0u8; 512])
+            .expect("файл в подкаталоге записывается");
+
+        let freed = clear_staging_dir(&dir);
+
+        assert_eq!(
+            freed,
+            2048 + 1024 + 512,
+            "освобождённый объём считается по файлам, включая подкаталоги"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("каталог читается").count(),
+            0,
+            "каталог обновления очищен"
+        );
+        assert_eq!(clear_staging_dir(&dir), 0, "пустой каталог — не ошибка");
+        assert_eq!(
+            clear_staging_dir(&dir.join("нет-такого-каталога")),
+            0,
+            "отсутствующий каталог — не ошибка"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Аргументы установщика: тихая установка, обновление поверх, перезапуск и
+    /// каталог программы последним аргументом без кавычек — так требует NSIS,
+    /// иначе `/D=` не разберётся.
+    #[test]
+    fn installer_arguments_end_with_install_dir() {
+        let arguments = installer_arguments(Path::new("C:\\Program Files\\ChyguiSlide 2"));
+        assert_eq!(
+            arguments,
+            "/S /UPDATE /R /D=C:\\Program Files\\ChyguiSlide 2"
+        );
+        assert!(!arguments.contains('"'), "кавычки в /D= NSIS не принимает");
+    }
+
 
     /// Файл `Update.md` из корня проекта — ровно его публикует
     /// `publish_github.ps1` и читает программа.
