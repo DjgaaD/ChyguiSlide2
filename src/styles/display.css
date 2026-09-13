@@ -193,7 +193,10 @@ html.preview-frame body {
 }
 
 /* Подписи, прибитые к краям экрана: они вне потока слайда, поэтому «em» от
-   автофита им не достаётся — размер приходит переменной --sl-caption-px. */
+   автофита им не достаётся — размер приходит переменной --sl-caption-px.
+   Границы clamp те же, что у подписи на экране-эталоне 1920×1080 (18…72px), но
+   заданы в долях высоты кадра: в превью-iframe кадр меньше экрана, и подпись
+   должна уменьшаться вместе с ним (см. CAPTION_* в src/shared/caption.ts). */
 .bible-caption.pos-screen-top,
 .bible-caption.pos-corner-left,
 .bible-caption.pos-corner-right,
@@ -201,7 +204,7 @@ html.preview-frame body {
 .bible-caption.pos-screen-bottom-right {
   position: absolute;
   max-width: 46vw;
-  font-size: clamp(18px, var(--sl-caption-px, 2.6vw), 72px);
+  font-size: clamp(1.67vh, var(--sl-caption-px, 2.6vw), 6.67vh);
   line-height: 1.2;
 }
 

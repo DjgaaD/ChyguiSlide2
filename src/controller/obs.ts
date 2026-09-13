@@ -5,10 +5,12 @@
  * прозрачным фоном (см. `src-tauri/src/obs.rs`), а этот модуль показывает настройки
  * вывода во вкладке «Трансляция» и зеркалирует в OBS команды окна вывода (текст
  * слайда, оформление, очистку) — поэтому слова в трансляции не отстают от эфира.
+ * В трансляцию уходят только песни и стихи Библии: объявления показывают в зале,
+ * в OBS они не попадают (см. `obsAcceptsTextMode`).
  */
 import { invoke } from "../shared/ipc";
 import { logError, logInfo } from "../shared/logger";
-import { EVENTS, type SetTextPayload } from "../shared/events";
+import { EVENTS, type SetTextPayload, type TextMode } from "../shared/events";
 import { cleanSongLines, type BibleCaptionPosition, type StyleConfig } from "../shared/style";
 
 /** Ответ команды `obs_settings`. */
@@ -80,6 +82,15 @@ function captionGoesAfterText(position: BibleCaptionPosition): boolean {
   );
 }
 
+/**
+ * Что вообще уходит в OBS: только слова песен и стихов Библии. Объявления
+ * показывают в зале, в трансляцию они не идут — поэтому для любого другого
+ * режима оверлей очищается, иначе в эфире остались бы слова предыдущей песни.
+ */
+export function obsAcceptsTextMode(mode: TextMode): boolean {
+  return mode === "song" || mode === "bible";
+}
+
 /** Отправляет текст слайда; пустой слайд означает очистку. */
 export async function pushObsSlide(lines: string[], caption = "", mode = ""): Promise<void> {
   lastSlide = { lines, caption, mode };
@@ -112,11 +123,17 @@ export async function pushObsStyle(style: StyleConfig): Promise<void> {
 /**
  * Зеркалирует команду окна вывода в OBS. Медиа в оверлей не попадает — там только
  * слова, поэтому «очистить текст» и полная очистка для OBS одно и то же.
+ * В OBS уходят только песни и стихи Библии (см. `obsAcceptsTextMode`): объявления
+ * на экране есть, а в трансляции их нет — оверлей в этом случае гасится.
  */
 export function mirrorEventToObs(event: string, payload: unknown): void {
   switch (event) {
     case EVENTS.setText: {
       const text = payload as SetTextPayload;
+      if (!obsAcceptsTextMode(text.mode)) {
+        void pushObsSlide([], "", "");
+        break;
+      }
       const lines = text.mode === "song" ? cleanSongLines(text.lines, text.title) : text.lines;
       void pushObsSlide(lines, text.verseRef ?? "", text.mode);
       break;
@@ -157,7 +174,11 @@ function statusText(settings: ObsSettings): string {
   const backdrop = settings.backdropEnabled
     ? `Подложка под текст: ${Math.round(settings.backdropOpacity)}%.`
     : "Подложка под текст выключена.";
-  return `Слова уходят в OBS на порт ${settings.port}: источник «Браузер» с адресом выше покажет текст слайда. ${backdrop}`;
+  return (
+    `Слова уходят в OBS на порт ${settings.port}: источник «Браузер» с адресом выше ` +
+    `покажет текст слайда. ${backdrop} ` +
+    "В OBS уходят только песни и стихи Библии — объявления в трансляцию не выводятся."
+  );
 }
 
 /** Поле непрозрачности активно только при включённой подложке. */

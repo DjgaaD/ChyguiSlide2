@@ -23,6 +23,7 @@ import {
   type StyleConfig,
   type TransitionType,
 } from "../shared/style";
+import { captionSizePx } from "../shared/caption";
 
 const PERSISTENT_STORAGE_KEY = "chyguislide.persistentDisplay";
 
@@ -96,8 +97,6 @@ function pxOf(value: string): number {
  */
 const AUTOFIT_BASE_PX = 100;
 const AUTOFIT_START_RATIO = 0.15;
-/** Подпись стиха чуть меньше основного текста — как в CSS `.bible-caption`. */
-const CAPTION_SIZE_RATIO = 0.9;
 
 function fitNow(pane: HTMLElement, content: HTMLElement) {
   if (!content.isConnected) {
@@ -161,10 +160,13 @@ function fitNow(pane: HTMLElement, content: HTMLElement) {
   }
   content.style.fontSize = `${fontSize}px`;
   // Подписи, прибитые к краям экрана, лежат вне `.slide-content` и «em» от
-  // автофита не наследуют — размер передаём переменной.
+  // автофита не наследуют — размер передаём переменной. Считаем его по кадру
+  // (`captionSizePx`): на экране коэффициент кадра равен 1, в превью-iframe он
+  // меньше — вместе с ним уменьшаются и границы подписи, поэтому пропорция
+  // «основной текст : подпись» в превью та же, что в окне вывода.
   pane.style.setProperty(
     "--sl-caption-px",
-    `${Math.round(fontSize * CAPTION_SIZE_RATIO)}px`,
+    `${captionSizePx(fontSize, window.innerHeight)}px`,
   );
 }
 
