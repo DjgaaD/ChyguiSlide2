@@ -29,6 +29,11 @@
       -KeepFiles                — не удалять скачанные файлы;
       -Yes                      — не спрашивать подтверждение.
 
+    Если программа установлена в защищённую папку (например, C:\Program Files),
+    установщик запускается с правами администратора — Windows запросит
+    подтверждение. Без прав тихая установка там заканчивается «успешно», но не
+    заменяет ни одного файла: так же ведёт себя и программа при обновлении.
+
     Код возврата: 0 — успех, 1 — отмена или ошибка.
 #>
 [CmdletBinding()]
@@ -110,6 +115,43 @@ function Get-Magic {
     } finally { $stream.Dispose() }
     if ($read -lt 2) { return @(0, 0) }
     return @($head[0], $head[1])
+}
+
+# Каталог установленной программы: установщик записывает его в реестр. Записи
+# может не быть (программа ещё не установлена) или каталог мог остаться от
+# неудачной установки — тогда путь не годится, и программа ставится по умолчанию.
+function Get-InstalledDir {
+    $keys = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChyguiSlide',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChyguiSlide',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\ChyguiSlide'
+    )
+    foreach ($key in $keys) {
+        if (-not (Test-Path -LiteralPath $key)) { continue }
+        $location = (Get-ItemProperty -LiteralPath $key -Name 'InstallLocation' -ErrorAction SilentlyContinue).InstallLocation
+        if (-not $location) { continue }
+        # Путь в реестре хранится в кавычках. Годится любой существующий каталог:
+        # это место, куда программа установлена, — туда же её и обновляем.
+        $path = ([string]$location).Trim('"').Trim()
+        if ($path -and (Test-Path -LiteralPath $path -PathType Container)) { return $path }
+    }
+    return $null
+}
+
+# Можно ли писать в каталог: пробный файл создаётся и сразу удаляется — так же
+# решает программа при обновлении (src-tauri/src/updater.rs).
+function Test-DirWritable {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $probe = Join-Path $Path ('.install-write-test-{0}' -f [Guid]::NewGuid().ToString('N'))
+    try {
+        $stream = [System.IO.File]::Create($probe)
+        $stream.Dispose()
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 # --- 1. Манифест --------------------------------------------------------------
@@ -267,14 +309,53 @@ Write-Host '[5/5] Установка'
 if ($SkipInstall) {
     Write-Host "      запуск пропущен (-SkipInstall): $($installer.FullName)"
 } else {
+    # Каталог установки передаём установщику явно: своё прежнее место он берёт
+    # из реестра, а запись там могла остаться от неудачной установки — тогда
+    # файлы уходят не туда, где программа работает сейчас.
+    $installDir = Get-InstalledDir
+    if (-not $installDir) { $installDir = Join-Path $env:LOCALAPPDATA 'ChyguiSlide' }
+
+    # Права нужны, когда каталог уже есть, а писать в него нельзя (например,
+    # C:\Program Files), или когда каталога нет, а нельзя писать в его родителя.
+    # Без прав тихая установка в защищённый каталог заканчивается «успешно», но
+    # не заменяет ни одного файла — так же ведёт себя и программа при обновлении.
+    $probeDir = $installDir
+    if (-not (Test-Path -LiteralPath $probeDir)) { $probeDir = Split-Path -Parent $probeDir }
+    $elevate = -not (Test-DirWritable -Path $probeDir)
+
     if ($Silent) {
-        $arguments = @('/S', '/UPDATE', '/R')
+        # /D= установщик принимает только последним аргументом и без кавычек,
+        # поэтому путь подставляется прямо в строку аргументов.
+        $arguments = @('/S', '/UPDATE', '/R', "/D=$installDir")
         Write-Host '      установка без окон (/S /UPDATE /R)'
     } else {
-        $arguments = @()
+        $arguments = @("/D=$installDir")
         Write-Host '      откроется окно установщика'
     }
-    Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait
+    Write-Host "      каталог установки: $installDir"
+    if ($elevate) {
+        Write-Host '      каталог защищён: установщик запустится с правами администратора'
+        Write-Host '      Windows запросит подтверждение'
+    }
+
+    $startArgs = @{ FilePath = $installer.FullName; ArgumentList = $arguments; PassThru = $true }
+    if ($elevate) { $startArgs['Verb'] = 'RunAs' }
+    try {
+        $process = Start-Process @startArgs
+    } catch {
+        if ($elevate) {
+            throw 'Установка отменена: запрос прав администратора отклонён.' +
+                " Установщик лежит в $($installer.FullName) — его можно запустить вручную."
+        }
+        throw
+    }
+    # Ждём завершения именно установщика: -Wait дождался бы и программы, которую
+    # установщик перезапускает по ключу /R, — а она работает, пока её не закроют.
+    if ($process) {
+        while (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+            Start-Sleep -Milliseconds 500
+        }
+    }
     Write-Host '      установщик завершил работу'
 }
 
