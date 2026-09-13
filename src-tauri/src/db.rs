@@ -185,12 +185,6 @@ fn register_cyrillic_lower(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn is_empty(conn: &Connection) -> rusqlite::Result<bool> {
-    let songs: i64 = conn.query_row("SELECT COUNT(*) FROM songs", [], |r| r.get(0))?;
-    let verses: i64 = conn.query_row("SELECT COUNT(*) FROM bible_verses", [], |r| r.get(0))?;
-    Ok(songs == 0 || verses == 0)
-}
-
 #[derive(Serialize)]
 pub struct SongHit {
     pub id: i64,
@@ -343,6 +337,20 @@ pub fn assign_songs_without_collection(conn: &Connection, collection_id: i64) ->
         params![collection_id],
     )?;
     Ok(())
+}
+
+/// Сборник, в который попадают песни без явной привязки.
+pub const DEFAULT_COLLECTION: &str = "Песнь возрождения 3300";
+
+/// Старые базы: если сборников ещё нет, создаёт сборник по умолчанию и
+/// привязывает к нему песни без сборника.
+pub fn ensure_default_collection(conn: &Connection) -> rusqlite::Result<()> {
+    let songs: i64 = conn.query_row("SELECT COUNT(*) FROM songs", [], |row| row.get(0))?;
+    if songs == 0 {
+        return Ok(());
+    }
+    let collection_id = ensure_collection(conn, DEFAULT_COLLECTION)?;
+    assign_songs_without_collection(conn, collection_id)
 }
 
 pub fn search_songs(

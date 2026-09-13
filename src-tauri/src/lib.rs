@@ -1,6 +1,6 @@
 mod commands;
 mod db;
-mod import;
+mod seed;
 mod logger;
 mod obs;
 mod opener;
@@ -47,18 +47,18 @@ pub fn run() {
                     tauri::VERSION
                 ),
             );
-            let db_path = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?
-                .join("chyguislide.sqlite");
-            logger::info("db", &format!("Файл базы данных: {}", db_path.display()));
-            let mut conn = db::open(&db_path).map_err(|e| {
+            // Рабочая база: на новом компьютере она создаётся копией эталонной
+            // базы из ресурсов (см. `seed.rs`) — разбор `songs.sps` и
+            // `bible.json` при запуске больше не выполняется.
+            let db_path = seed::ensure_database(&handle)?;
+            let conn = db::open(&db_path).map_err(|e| {
                 logger::error("db", &format!("не удалось открыть базу: {e}"));
                 e.to_string()
             })?;
-            import::seed_if_needed(&handle, &mut conn)?;
-            import::ensure_default_collection(&conn)?;
+            db::ensure_default_collection(&conn).map_err(|e| {
+                logger::error("db", &format!("не удалось привязать песни к сборнику: {e}"));
+                e.to_string()
+            })?;
             app.manage(AppState {
                 db: Mutex::new(conn),
                 db_path,

@@ -23,7 +23,7 @@ release/
 # Их нужно положить в src-tauri/binaries/ перед сборкой (см. README.md).
 src-tauri/binaries/
 
-# Исходные данные для импорта: те же файлы лежат в src-tauri/resources/.
+# Исходные данные: из них готовится эталонная база src-tauri/resources/template.sqlite.
 Данные/
 
 # Editor directories and files

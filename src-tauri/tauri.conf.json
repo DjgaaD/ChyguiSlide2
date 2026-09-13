@@ -39,7 +39,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/*", "resources/wallpapers/*"],
+    "resources": ["resources/template.sqlite", "resources/wallpapers/*"],
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"]
   }
 }
