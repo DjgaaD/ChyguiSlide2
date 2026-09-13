@@ -3,6 +3,7 @@ use crate::logger;
 use crate::windows::{self, MonitorInfo};
 use crate::AppState;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -818,6 +819,32 @@ pub fn get_hotkeys(state: State<AppState>) -> Result<Vec<HotkeyRow>, String> {
 pub fn save_hotkeys(bindings: Vec<HotkeyRow>, state: State<AppState>) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db::save_hotkeys(&db, &bindings).map_err(|e| e.to_string())
+}
+
+/* ——— Настройки интерфейса (таблица `app_settings`) ——— */
+
+/// Пакетное чтение настроек интерфейса: возвращаются только существующие ключи.
+/// Используется при старте, например для ширин левых колонок вкладок.
+#[tauri::command]
+pub fn get_app_settings(
+    keys: Vec<String>,
+    state: State<AppState>,
+) -> Result<HashMap<String, String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut values = HashMap::new();
+    for key in keys {
+        if let Some(value) = db::get_setting(&db, &key).map_err(|e| e.to_string())? {
+            values.insert(key, value);
+        }
+    }
+    Ok(values)
+}
+
+/// Запись настройки интерфейса (ширина колонки, состояние панели и т. п.).
+#[tauri::command]
+pub fn set_app_setting(key: String, value: String, state: State<AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db::set_setting(&db, &key, &value).map_err(|e| e.to_string())
 }
 
 /* ——— Журнал работы приложения ——— */

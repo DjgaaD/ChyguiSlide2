@@ -132,6 +132,16 @@
           <ul id="song-list" class="song-list"></ul>
         </aside>
 
+        <!-- Разделитель: тянет левую колонку, средняя уменьшается, правая фиксирована. -->
+        <div
+          class="resizer"
+          data-resizer="songs"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину списка песен"
+          title="Перетащите, чтобы изменить ширину (двойной клик — по умолчанию)"
+        ></div>
+
         <section class="col-center">
           <div id="songs-empty" class="empty-hint">Выберите песню, чтобы увидеть слайды.</div>
           <div id="songs-detail" hidden>
@@ -174,6 +184,16 @@
 
           <div id="bible-books" class="book-panel"></div>
         </aside>
+
+        <!-- Разделитель ширины списка книг/стихов: своя ширина у вкладки «Библия». -->
+        <div
+          class="resizer"
+          data-resizer="bible"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину списка книг"
+          title="Перетащите, чтобы изменить ширину (двойной клик — по умолчанию)"
+        ></div>
 
         <section class="col-center">
           <div class="song-heading">
@@ -363,6 +383,16 @@
           <div class="section-label subtle">Сохранённые</div>
           <ul id="saved-playlists" class="song-list playlist-items"></ul>
         </aside>
+
+        <!-- Разделитель ширины плейлистов: своя ширина у вкладки «Трансляция». -->
+        <div
+          class="resizer"
+          data-resizer="broadcast"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину плейлистов"
+          title="Перетащите, чтобы изменить ширину (двойной клик — по умолчанию)"
+        ></div>
 
         <section class="col-center">
           <div id="bc-empty" class="empty-hint">Выберите элемент плейлиста, чтобы увидеть слайды.</div>

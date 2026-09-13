@@ -5,6 +5,7 @@ import {
   type SetStylePayload,
   type SetTextPayload,
 } from "../shared/events";
+import { cleanSongLines } from "../shared/style";
 
 export function postToPreview(iframe: HTMLIFrameElement, message: PreviewMessage) {
   iframe.contentWindow?.postMessage(message, "*");
@@ -16,6 +17,28 @@ export function previewSetText(iframe: HTMLIFrameElement, payload: SetTextPayloa
     type: EVENTS.setText,
     payload,
   });
+}
+
+/**
+ * Единый payload слайда для превью — точная копия того, что получает окно вывода.
+ * Правила те же, что в `renderText` (`src/display/main.ts`):
+ * — заголовок служебный и на экран никогда не попадает;
+ * — для песен строки проходят жёсткую фильтрацию (`cleanSongLines`);
+ * — подпись стиха (`verseRef`) передаётся всегда, когда есть: без неё в превью
+ *   пропадает ссылка, которую рисует активный стиль.
+ */
+export function slideTextPayload(payload: SetTextPayload): SetTextPayload {
+  return {
+    lines:
+      payload.mode === "song" ? cleanSongLines(payload.lines, payload.title) : payload.lines,
+    mode: payload.mode,
+    ...(payload.verseRef ? { verseRef: payload.verseRef } : {}),
+  };
+}
+
+/** Отправка слайда в превью по единым правилам (см. `slideTextPayload`). */
+export function previewSetSlide(iframe: HTMLIFrameElement, payload: SetTextPayload) {
+  previewSetText(iframe, slideTextPayload(payload));
 }
 
 export function previewClear(iframe: HTMLIFrameElement) {

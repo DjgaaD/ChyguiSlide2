@@ -1,7 +1,7 @@
 import { emitTo, invoke, listen } from "../shared/ipc";
 import { logInfo, logWarn } from "../shared/logger";
-import { EVENTS, PREVIEW_CHANNEL } from "../shared/events";
-import { postToPreview } from "./preview-frame";
+import { EVENTS, PREVIEW_CHANNEL, type SetTextPayload } from "../shared/events";
+import { postToPreview, slideTextPayload } from "./preview-frame";
 import { mirrorEventToObs } from "./obs";
 
 const DISPLAY = "display";
@@ -11,6 +11,28 @@ let displayReady = false;
 let readyWatchStarted = false;
 let monitorIndex: number | null = null;
 let previewFrame: HTMLIFrameElement | null = null;
+
+/** Подписчики на готовность окна вывода — в том числе после его пересоздания. */
+const readyHandlers = new Set<() => void>();
+
+/**
+ * Регистрирует обработчик готовности окна вывода. Нужен тем, кто кэширует
+ * отправленный на экран контент: окно могло быть пересоздано (Esc в окне
+ * вывода), и тогда кэш недействителен — контент придётся отправить заново.
+ */
+export function onDisplayReady(handler: () => void): void {
+  readyHandlers.add(handler);
+}
+
+function notifyDisplayReady() {
+  for (const handler of [...readyHandlers]) {
+    try {
+      handler();
+    } catch (error) {
+      console.warn("[show] display ready handler failed", error);
+    }
+  }
+}
 
 /**
  * Register the preview iframe so it mirrors everything sent to the display.
@@ -39,6 +61,7 @@ async function watchReadyEvents() {
     displayReady = true;
     console.log("[show] ← display:ready received");
     logInfo("display", "окно вывода сообщило о готовности");
+    notifyDisplayReady();
   });
 }
 
@@ -65,6 +88,7 @@ function waitForReadySignal(): Promise<void> {
       unlistenFn?.();
       if (ok) {
         displayReady = true;
+        notifyDisplayReady();
         resolve();
       } else {
         reject(err ?? new Error("ready wait failed"));
@@ -148,12 +172,18 @@ export async function sendToDisplay<T>(event: string, payload: T): Promise<void>
     console.error("[show] emitTo FAILED", event, err);
     throw err;
   }
-  // Mirror to preview iframe so it always shows what's live on the display
+  // Mirror to preview iframe so it always shows what's live on the display.
+  // Слайд приводим к тому же виду, что рисует окно вывода (`renderText`):
+  // заголовок отбрасываем, строки песни фильтруем, подпись стиха сохраняем —
+  // иначе превью и экран показывают разный текст.
   if (previewFrame) {
     postToPreview(previewFrame, {
       channel: PREVIEW_CHANNEL,
       type: event as any,
-      payload,
+      payload:
+        event === EVENTS.setText
+          ? slideTextPayload(payload as SetTextPayload)
+          : payload,
     } as any);
   }
 }

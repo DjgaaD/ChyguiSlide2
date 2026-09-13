@@ -480,7 +480,32 @@ function isBackgroundOnScreen(): boolean {
   return layerBg.classList.contains("visible") && layerBg.style.display !== "none";
 }
 
+/**
+ * Глубокая проверка «на экране уже этот же слайд». Сравниваем всё, что реально
+ * выводится (строки, режим, подпись стиха); `title` не участвует — он служебный
+ * и в DOM не попадает.
+ *
+ * Зачем: повторный клик по активному слайду присылает идентичный payload.
+ * Пересборка DOM сбрасывает идущие анимации перехода и сбрасывает автофит,
+ * из-за чего текст на экране едва заметно «моргает».
+ */
+function isSameSlide(previous: SetTextPayload | null, next: SetTextPayload): boolean {
+  if (!previous || previous.mode !== next.mode) {
+    return false;
+  }
+  if ((previous.verseRef ?? "") !== (next.verseRef ?? "")) {
+    return false;
+  }
+  const before = previous.lines ?? [];
+  const after = next.lines ?? [];
+  return before.length === after.length && before.every((line, index) => line === after[index]);
+}
+
 function setText(payload: SetTextPayload) {
+  if (isSameSlide(lastPayload, payload)) {
+    console.log("[display] set-text: тот же слайд — DOM не перестраиваем");
+    return;
+  }
   // Новый слайд отменяет незавершённую очистку: иначе её таймер сработает уже
   // после отрисовки и сотрёт только что показанный текст.
   rootFadeSeq += 1;

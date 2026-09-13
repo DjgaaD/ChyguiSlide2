@@ -185,6 +185,8 @@ pub fn run() {
             commands::delete_style,
             commands::get_hotkeys,
             commands::save_hotkeys,
+            commands::get_app_settings,
+            commands::set_app_setting,
             commands::log_events,
             commands::get_log_info,
             commands::open_logs_folder,

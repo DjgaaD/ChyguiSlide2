@@ -14,8 +14,9 @@ import {
   applyPreviewAspect,
   previewClear,
   previewFullClear,
+  previewSetSlide,
 } from "./preview-frame";
-import { closeDisplayWindow, sendToDisplay, setPreviewFrame } from "./display-bridge";
+import { closeDisplayWindow, onDisplayReady, sendToDisplay, setPreviewFrame } from "./display-bridge";
 import { applyActiveStyleToOutputs } from "./styles";
 import { cleanSongLines } from "../shared/style";
 
@@ -76,6 +77,13 @@ let live = false;
 let liveKey = "";
 let liveSlide = -1;
 let liveHasMedia = false;
+/**
+ * Слайд, который сейчас реально стоит на экране (null — экран пуст). По нему
+ * гасим повторные отправки: клик по уже активному слайду не должен перестраивать
+ * DOM окна вывода, иначе сбрасываются анимации перехода и текст заметно мерцает.
+ * Тем же объектом восстанавливаем превью, если его iframe перезагрузился.
+ */
+let liveSlidePayload: SetTextPayload | null = null;
 let pendingText: SetTextPayload | null = null;
 let pendingMedia: SetMediaPayload | null = null;
 /** Состояние оптимизации MP4 в «Быстром плейлисте» (ключ — путь к файлу). */
@@ -105,6 +113,15 @@ function frame(): HTMLIFrameElement {
 function fileName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || path;
+}
+
+/**
+ * Подпись текста слайда: всё, что видно на экране (строки, режим и подпись стиха).
+ * Совпадение подписей означает, что слайд на экране уже показан и перерисовывать
+ * его не нужно. Пустой экран (`null`) даёт пустую подпись.
+ */
+function textSignature(payload: SetTextPayload | null): string {
+  return payload ? JSON.stringify([payload.mode, payload.verseRef ?? "", payload.lines]) : "";
 }
 
 export function mediaKindFromPath(path: string): "image" | "video" {
@@ -146,6 +163,28 @@ function setPreviewIdle(text: string) {
 
 function hidePreviewIdle() {
   document.getElementById("bc-preview-idle")?.setAttribute("hidden", "");
+}
+
+/**
+ * Возвращает текущий живой слайд на превью и на экран. Нужно после перезагрузки
+ * iframe превью или пересоздания окна вывода (Esc в окне Display): без этого
+ * «Сейчас на экране» и сам экран показывают разное.
+ *
+ * Повтор для окна вывода, которое уже показывает этот слайд, гасится проверкой
+ * `isSameSlide` в `src/display/main.ts`, поэтому мерцания не будет.
+ */
+function restoreLiveSlide(): void {
+  const payload = liveSlidePayload;
+  if (!payload) {
+    return;
+  }
+  hidePreviewIdle();
+  // Превью зеркалит команду внутри `sendToDisplay`, поэтому отдельная отправка
+  // нужна только как запасной путь — когда окно вывода поднять не удалось.
+  void sendToDisplay(EVENTS.setText, payload).catch((err) => {
+    console.warn("[show] restore live slide failed", err);
+    previewSetSlide(frame(), payload);
+  });
 }
 
 function syncLiveUi() {
@@ -193,6 +232,7 @@ async function restoreAfterQuickMedia(itemKey: string): Promise<void> {
   liveKey = "";
   liveSlide = -1;
   liveHasMedia = false;
+  liveSlidePayload = null;
   setPreviewIdle("Нет сигнала");
   syncLiveUi();
   renderQuickList();
@@ -515,16 +555,25 @@ async function pickSlide(index: number, sendLive: boolean) {
   syncLiveUi();
 
   if (sendLive) {
-    console.log("[show] pickSlide → live send", { index, title: selectedSong?.title ?? selectedText?.title });
     liveSlide = index;
-    if (selectedSong) {
-      hooks.bumpShow(selectedSong.id);
-    }
-    await sendToDisplay(EVENTS.setText, {
+    const payload: SetTextPayload = {
       lines,
       mode,
       ...(verseRef ? { verseRef } : {}),
-    } satisfies SetTextPayload);
+    };
+    const signature = textSignature(payload);
+    if (signature === textSignature(liveSlidePayload)) {
+      // Этот слайд уже стоит на экране: DOM окна вывода не трогаем, иначе
+      // перезапускаются анимации перехода и текст «моргает».
+      logInfo("show", "слайд уже на экране — повторная отправка пропущена", { index });
+    } else {
+      console.log("[show] pickSlide → live send", { index, title: selectedSong?.title ?? selectedText?.title });
+      liveSlidePayload = payload;
+      if (selectedSong) {
+        hooks.bumpShow(selectedSong.id);
+      }
+      await sendToDisplay(EVENTS.setText, payload);
+    }
     renderSlides();
   }
   // Ensure the active slide stays visible in the scrollable host (#bc-slide-host)
@@ -551,6 +600,7 @@ async function startShow() {
     liveKey = selectedKey;
     liveSlide = -1;
     liveHasMedia = true;
+    liveSlidePayload = null;
     hidePreviewIdle();
     await sendToDisplay(EVENTS.setMedia, pendingMedia);
     syncLiveUi();
@@ -568,11 +618,15 @@ async function startShow() {
   if (selectedSong) {
     hooks.bumpShow(selectedSong.id);
   }
-  await sendToDisplay(EVENTS.setText, {
+  const payload: SetTextPayload = {
     lines: pendingText.lines,
     mode: pendingText.mode,
     ...(pendingText.verseRef ? { verseRef: pendingText.verseRef } : {}),
-  } satisfies SetTextPayload);
+  };
+  // Слайд уходит на экран — запоминаем его, чтобы клик по нему же не
+  // перерисовывал DOM (см. `pickSlide`) и чтобы превью могло восстановиться.
+  liveSlidePayload = payload;
+  await sendToDisplay(EVENTS.setText, payload);
   syncLiveUi();
   renderSlides();
   renderQuickList();
@@ -581,10 +635,14 @@ async function startShow() {
 async function clearTextOnly() {
   console.log("[show] clearTextOnly");
   const payload: ClearPayload = { textOnly: true };
+  // Превью зеркалит эту же команду внутри sendToDisplay — отдельная команда
+  // превью привела бы к тому, что «Сейчас на экране» и экран расходились.
   await sendToDisplay(EVENTS.clear, payload).catch((err) => {
     console.warn("[show] clear failed", err);
+    previewClear(frame());
   });
-  previewClear(frame());
+  // Текста на экране больше нет — тот же слайд снова должен уйти в эфир.
+  liveSlidePayload = null;
   if (pendingMedia) {
     setPreviewIdle("Фон на экране");
   } else {
@@ -601,8 +659,15 @@ async function endShow() {
     return;
   }
   const textOnly = hooks.persistentEnabled();
+  // Та же команда уходит и в превью: при `textOnly: false` оно тоже обязано
+  // убрать фон, иначе «Сейчас на экране» показывает картинку, которой на экране нет.
   await sendToDisplay(EVENTS.clear, { textOnly } satisfies ClearPayload).catch((err) => {
     console.warn("[show] end clear failed", err);
+    if (textOnly) {
+      previewClear(frame());
+    } else {
+      previewFullClear(frame());
+    }
   });
   if (!textOnly) {
     // Даём окну вывода погасить кадр (fade-out в display.css), иначе финал
@@ -615,7 +680,8 @@ async function endShow() {
   live = false;
   liveKey = "";
   liveSlide = -1;
-  previewClear(frame());
+  // Экран пуст: следующий показ того же слайда обязан снова уйти в окно вывода.
+  liveSlidePayload = null;
   setPreviewIdle("Нет сигнала");
   syncLiveUi();
   renderSlides();
@@ -915,6 +981,11 @@ export function bindBroadcast(h: BroadcastHooks) {
   document.getElementById("bc-slide-host")?.addEventListener("scroll", () => updateSlideStripe());
   // Register preview frame to mirror everything sent to the display
   setPreviewFrame(frame());
+  // Окно вывода (пере)создано: после Esc в окне Display экран пуст, поэтому
+  // возвращаем на него живой слайд. Если слайда нет — ничего не делаем.
+  onDisplayReady(() => {
+    restoreLiveSlide();
+  });
   // Clear preview on boot - it should start completely empty (no text, no media bg)
   previewFullClear(frame());
   setPreviewIdle("Нет сигнала");
@@ -938,7 +1009,13 @@ export function bindBroadcast(h: BroadcastHooks) {
   frame().addEventListener("load", () => {
     applyPreviewAspect(frame(), hooks.previewAspect().width, hooks.previewAspect().height);
     previewFullClear(frame());
-    setPreviewIdle("Нет сигнала");
+    if (liveSlidePayload) {
+      // iframe превью перезагрузился — возвращаем на него то, что стоит на экране,
+      // иначе «Сейчас на экране» окажется пустым при живом слайде.
+      restoreLiveSlide();
+    } else {
+      setPreviewIdle("Нет сигнала");
+    }
   });
 
   // Esc управляется централизованно модулем горячих клавиш (show.end).

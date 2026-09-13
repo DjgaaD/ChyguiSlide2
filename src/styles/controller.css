@@ -187,10 +187,52 @@ textarea {
 
 #view-songs.page-songs.active,
 #view-broadcast.page-broadcast.active,
-#view-announcements.page-announcements.active,
 #view-bible.page-bible.active {
+  /* Ширина левой колонки — своя переменная у каждой вкладки; её ставит
+     `src/controller/column-splitter.ts` (перетаскивание разделителя).
+     Средняя колонка забирает остаток, правая — фиксированная доля и при
+     перетаскивании не меняется. */
+  --left-col-width: 17%;
+  --right-col-width: 37%;
+  --resizer-width: 6px;
+  grid-template-columns:
+    var(--left-col-width) var(--resizer-width) minmax(0, 1fr) var(--right-col-width);
+  grid-template-rows: 1fr;
+}
+
+#view-announcements.page-announcements.active {
   grid-template-columns: 17fr 46fr 37fr;
   grid-template-rows: 1fr;
+}
+
+/* ——— Разделитель колонок (сплиттер) ——— */
+.resizer {
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  cursor: ew-resize;
+  background: var(--stroke);
+  align-self: stretch;
+  touch-action: none;
+}
+
+/* Зона захвата шире самой полоски: курсор не «теряется» на узкой границе. */
+.resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+
+.resizer:hover,
+.resizer.dragging {
+  background: var(--accent);
+}
+
+/* Во время перетаскивания курсор и запрет выделения держим на всём окне. */
+body.col-resizing,
+body.col-resizing * {
+  cursor: ew-resize !important;
+  user-select: none !important;
 }
 
 #view-settings.active {
@@ -1487,6 +1529,11 @@ textarea {
   #view-bible.page-bible.active {
     grid-template-columns: 1fr;
     overflow-y: auto;
+  }
+
+  /* Узкое окно: колонки идут друг под другом — разделитель не нужен. */
+  .resizer {
+    display: none;
   }
 
   .col-left,

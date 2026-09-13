@@ -35,7 +35,7 @@ import {
   type MonitorInfo,
   type TextMode,
 } from "../shared/events";
-import { applyPreviewAspect, previewClear, previewSetText } from "./preview-frame";
+import { applyPreviewAspect, previewClear, previewSetSlide } from "./preview-frame";
 import {
   addSongToQuickPlaylist,
   bindBroadcast,
@@ -67,8 +67,8 @@ import {
   getActiveStyleConfig,
   refreshActiveStylePreviews,
 } from "./styles";
-import { cleanSongLines } from "../shared/style";
 import { bindHotkeysUi, bootHotkeys, registerHotkeys } from "./hotkeys";
+import { bootColumnSplitters } from "./column-splitter";
 import { bindObsUi, pushObsStyle, refreshObsStatus } from "./obs";
 
 type SongHit = { id: number; number: number; title: string };
@@ -259,8 +259,9 @@ function setBiblePreview(payload: PendingSlide | null) {
     showBtn.textContent =
       count > 1 ? `Показать на экране (${verseCountLabel(count)})` : "Показать на экране";
   }
-  // На экран — только текст стиха; ссылка (verseRef) рисуется по настройкам стиля.
-  previewSetText(frame, { lines: payload.lines, mode: payload.mode });
+  // В превью — то же, что уходит на экран: без заголовка, но с подписью стиха
+  // (`verseRef`), которую рисует активный стиль (см. `previewSetSlide`).
+  previewSetSlide(frame, payload);
   refreshActiveStylePreviews();
 }
 
@@ -511,11 +512,9 @@ function setSongsPreview(payload: PendingSlide | null) {
   if (showBtn) {
     showBtn.disabled = false;
   }
-  // В превью только текст слайда — жёсткая фильтрация (как на экране).
-  previewSetText(frame, {
-    lines: cleanSongLines(payload.lines, payload.title),
-    mode: payload.mode,
-  });
+  // В превью — тот же слайд, что уйдёт на экран (фильтрация песни и снятие
+  // заголовка выполняются в `previewSetSlide` ровно как в окне вывода).
+  previewSetSlide(frame, payload);
   // Гарантируем, что активный стиль (фон, шрифт) не потеряется при выборе.
   refreshActiveStylePreviews();
 }
@@ -538,7 +537,7 @@ function setAnnPreview(payload: PendingSlide | null) {
     showBtn.disabled = false;
   }
   // В превью только текст объявления — заголовок остаётся в интерфейсе.
-  previewSetText(frame, { lines: payload.lines, mode: payload.mode });
+  previewSetSlide(frame, payload);
   refreshActiveStylePreviews();
 }
 
@@ -2555,6 +2554,10 @@ async function boot() {
 
   await bootStyles();
   logInfo("boot", "стили загружены");
+  // Ширины левых колонок («Песни», «Библия», «Трансляция») восстанавливаем из БД.
+  await bootColumnSplitters().catch((error) => {
+    logError("boot", "не удалось восстановить ширины колонок", error);
+  });
   // Активный стиль сразу уходит и в OBS: оверлей, открытый до начала показа,
   // должен получить цвет, шрифт и переходы, а не оформление по умолчанию.
   void pushObsStyle(getActiveStyleConfig());
