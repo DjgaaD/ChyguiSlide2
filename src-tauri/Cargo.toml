@@ -1,6 +1,6 @@
 [package]
 name = "chyguislide"
-version = "0.1.3"
+version = "0.1.4"
 description = "Church presentation controller and display"
 authors = ["you"]
 edition = "2021"
