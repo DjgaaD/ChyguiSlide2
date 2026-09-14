@@ -165,7 +165,6 @@ let previewAspect = { width: 16, height: 9 };
 let songSort: "title" | "id" = "title";
 let songsRequestId = 0;
 let collections: Collection[] = [];
-let preferredCollectionId: number | null = null;
 
 function $(sel: string): HTMLElement {
   const el = document.querySelector<HTMLElement>(sel);
@@ -767,14 +766,6 @@ async function loadCollections(selectId?: number | null) {
 
   fill(songSel, keepSong);
   fill(overviewSel, keepOverview);
-
-  if (songSel.value !== "all") {
-    preferredCollectionId = Number(songSel.value);
-  } else if (collections[0]) {
-    preferredCollectionId = collections[0].id;
-  } else {
-    preferredCollectionId = null;
-  }
 }
 
 function escapeHtml(text: string): string {
@@ -1512,7 +1503,6 @@ async function loadOverview() {
 }
 
 async function onSongSaved(song: SongDetail) {
-  preferredCollectionId = song.collection_id ?? preferredCollectionId;
   if (song.collection_id != null) {
     select("#song-collection").value = String(song.collection_id);
   }
@@ -1579,7 +1569,6 @@ async function onCollectionSaved(saved: Collection) {
   }
   await loadCollections(normalized.id);
   select("#song-collection").value = String(normalized.id);
-  preferredCollectionId = normalized.id;
   await loadSongs();
   await loadOverview();
 }
@@ -2284,8 +2273,6 @@ function bindSongsUi() {
   });
 
   select("#song-collection").addEventListener("change", () => {
-    const value = select("#song-collection").value;
-    preferredCollectionId = value !== "all" ? Number(value) : preferredCollectionId;
     void loadSongs();
   });
 

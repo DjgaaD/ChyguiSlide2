@@ -1123,13 +1123,22 @@ body.col-resizing * {
 
 /* ——— Modals / song editor ——— */
 .modal {
+  /* Глобальный сброс `* { margin: 0 }` (см. начало файла) затирает `margin:
+     auto`, который браузер задаёт окну `dialog`, — без него окно прижимается к
+     левому верхнему углу экрана. `inset: 0` вместе с `margin: auto` ставит его
+     по центру. */
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  /* Ширину задаёт содержимое: у редактора песни — `.song-editor`, у остальных
+     окон — их `.modal-card`. */
+  width: fit-content;
+  max-width: min(1100px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
   border: 1px solid var(--stroke);
   background: var(--header-bg);
   color: var(--text);
   padding: 0;
-  max-width: min(1100px, calc(100vw - 48px));
-  width: 1100px;
-  max-height: calc(100vh - 48px);
 }
 
 .modal::backdrop {
@@ -1257,6 +1266,20 @@ body.col-resizing * {
   padding-top: 4px;
 }
 
+/* Кнопки окна — одной строкой. `.show-btn` рассчитан на большую кнопку
+   «Показать на экране» и растянут на всю ширину, из-за чего в окнах вторая
+   кнопка уезжала на отдельную строку: здесь обе делаются по содержимому. */
+.modal-actions .show-btn,
+.modal-actions .tool-btn,
+.modal-actions .ghost-btn {
+  width: auto;
+  height: 40px;
+  margin-top: 0;
+  padding: 0 18px;
+  font-size: 15px;
+  justify-content: center;
+}
+
 .ghost-btn {
   border: 1px solid var(--ghost-border);
   padding: 8px 14px;
@@ -1369,6 +1392,12 @@ body.col-resizing * {
 
 .song-editor {
   width: min(1100px, calc(100vw - 48px));
+}
+
+/* В редакторе песни действия отделены от текста слайда линией. */
+.song-editor .modal-actions {
+  border-top: 1px solid var(--stroke);
+  padding-top: 12px;
 }
 
 .playlist-head-actions {
