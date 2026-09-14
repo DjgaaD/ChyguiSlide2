@@ -47,6 +47,15 @@ let intentionalVideoPause = false;
 // Медиа, запущенное из «Трансляции», приоритетнее фона стиля: повторное
 // применение стиля (например, ответ на display:ping) не должно его затирать.
 let broadcastMediaActive = false;
+/**
+ * Кадр погашен явной очисткой (`clearAllDisplayContent`). Оформление при этом
+ * принимаем как обычно (цвет, шрифт, переходы), но фон и текст сами не
+ * возвращаются: иначе после сохранения стиля на пустом (чёрном) экране
+ * самопроизвольно появляется фон.
+ */
+let frameBlanked = false;
+/** Фон активного стиля, отложенный до следующего показа (см. `frameBlanked`). */
+let deferredStyleBackground = false;
 
 function frontPane(): HTMLElement {
   return frontIsA ? paneA : paneB;
@@ -315,6 +324,20 @@ function revealNextFrame(el: HTMLElement) {
   window.requestAnimationFrame(() => el.classList.remove("fade-out"));
 }
 
+/**
+ * Проявляет кадр после явной очистки и снимает признак «экран очищен».
+ * Отложенный фон активного стиля возвращается именно здесь: до этого момента
+ * показывать его нельзя — пустой экран обязан остаться пустым.
+ */
+function revealRootFrame() {
+  frameBlanked = false;
+  revealNextFrame(root);
+  if (deferredStyleBackground) {
+    deferredStyleBackground = false;
+    applyStyleBackground(activeStyle);
+  }
+}
+
 /** Снять inline-стили анимации на панели И строках — к чистому CSS-состоянию. */
 function clearPaneAnimationStyles(pane: HTMLElement) {
   pane.style.removeProperty("opacity");
@@ -552,7 +575,7 @@ function setText(payload: SetTextPayload) {
       revealNextFrame(layerText);
       return;
     }
-    revealNextFrame(root);
+    revealRootFrame();
     if (textHidden) {
       revealNextFrame(layerText);
     }
@@ -716,6 +739,14 @@ function applyStyleBackground(cfg: SetStylePayload) {
     return;
   }
 
+  // Экран очищен: обновление стиля меняет только оформление. Фон запоминаем и
+  // отдадим его при следующем показе (см. `revealRootFrame`) — на пустом кадре
+  // он появляться не должен.
+  if (frameBlanked) {
+    deferredStyleBackground = true;
+    return;
+  }
+
   // Only update background if it actually changed (prevents flickering)
   if (path === currentBgPath && (path !== null) === (currentBgPath !== null)) {
     return;
@@ -831,7 +862,7 @@ function setMedia(payload: SetMediaPayload, origin: MediaOrigin = "broadcast") {
   // Показ медиа отменяет незавершённую очистку и проявляет кадр.
   rootFadeSeq += 1;
   if (root.classList.contains("fade-out")) {
-    revealNextFrame(root);
+    revealRootFrame();
   }
 
   // Keep the filesystem path raw; convertFileSrc performs the required URL encoding
@@ -999,6 +1030,10 @@ async function clearAllDisplayContent(instant = false) {
   layerBg.classList.remove("visible");
   layerBg.style.display = "none";
   layerOverlay.style.opacity = "0";
+  // Экран очищен по команде: дальше принимаем только оформление, фон и текст
+  // возвращаются исключительно новым показом.
+  frameBlanked = true;
+  deferredStyleBackground = false;
 }
 
 function isPersistentBackground(): boolean {

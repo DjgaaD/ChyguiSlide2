@@ -2519,6 +2519,9 @@ function bind() {
     },
     previewBackgroundEnabled: (frame) =>
       frame.id !== "bc-preview-frame" || isBroadcastLive() || persistentDisplayEnabled(),
+    // Фон стиля «жив» только во время показа или при постоянном фоне: иначе
+    // сохранение стиля включало бы фон на пустом экране.
+    backgroundEnabled: () => isBroadcastLive() || persistentDisplayEnabled(),
   });
 
   // Кастомные горячие клавиши (глобальный keydown + вкладка настроек).

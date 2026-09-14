@@ -60,6 +60,12 @@ pub fn run() {
                 logger::error("db", &format!("не удалось привязать песни к сборнику: {e}"));
                 e.to_string()
             })?;
+            // Готовые стили и наши обои: новый компьютер получает три варианта
+            // оформления сразу (см. `seed::ensure_default_styles`). Ошибку только
+            // пишем в журнал — без стилей приложение работать может.
+            if let Err(error) = seed::ensure_default_styles(&conn, &handle) {
+                logger::error("style", &format!("не удалось поставить готовые стили: {error}"));
+            }
             app.manage(AppState {
                 db: Mutex::new(conn),
                 db_path,

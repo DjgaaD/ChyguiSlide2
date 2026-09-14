@@ -32,22 +32,72 @@ pub fn get_song(id: i64, state: State<AppState>) -> Result<Option<SongDetail>, S
     db::get_song(&db, id).map_err(|e| e.to_string())
 }
 
+/// Имена обоев из интерфейса → файлы в `resources/wallpapers`.
+pub(crate) fn wallpaper_file_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Звёзды" => Some("Звёзды.mp4"),
+        "Камни" => Some("Камни.mp4"),
+        "Крест" => Some("Крест.mp4"),
+        "Небо" => Some("Небо.mp4"),
+        "Поле" => Some("Поле.mp4"),
+        _ => None,
+    }
+}
+
+/// Обои, поставляемые с приложением, в порядке интерфейса.
+pub(crate) const WALLPAPER_NAMES: [&str; 5] = ["Звёзды", "Камни", "Крест", "Небо", "Поле"];
+
+/// Каталоги, где может лежать обоина. Сборка кладёт `resources/wallpapers/*` в
+/// подкаталог `resources` каталога ресурсов (см. `seed::resolve_template`), при
+/// запуске из репозитория файлы лежат в `src-tauri/resources/wallpapers`.
+fn wallpaper_candidates(
+    resource_dir: Option<&Path>,
+    current_dir: Option<&Path>,
+    file_name: &str,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = resource_dir {
+        candidates.push(dir.join("resources").join("wallpapers").join(file_name));
+        candidates.push(dir.join("wallpapers").join(file_name));
+    }
+    if let Some(dir) = current_dir {
+        candidates.push(dir.join("src-tauri").join("resources").join("wallpapers").join(file_name));
+        candidates.push(dir.join("resources").join("wallpapers").join(file_name));
+    }
+    candidates
+}
+
+/// Поставляемые обои, которые нашлись на диске: имя файла → полный путь.
+///
+/// Путь к ресурсам приложения зависит от машины, поэтому готовые стили
+/// (`seed::ensure_default_styles`) берут пути отсюда, а не хранят в базе
+/// зашитые значения: перенос базы на другой компьютер лечится сверкой имён
+/// (см. `seed::repair_shipped_wallpaper_paths`).
+pub(crate) fn shipped_wallpaper_files(app: &AppHandle) -> Vec<(String, PathBuf)> {
+    let resource_dir = app.path().resource_dir().ok();
+    let current_dir = std::env::current_dir().ok();
+    WALLPAPER_NAMES
+        .iter()
+        .filter_map(|name| wallpaper_file_name(name))
+        .filter_map(|file_name| {
+            wallpaper_candidates(resource_dir.as_deref(), current_dir.as_deref(), file_name)
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| (file_name.to_string(), path))
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn resolve_wallpaper(name: String, app: AppHandle) -> Result<String, String> {
-    let file_name = match name.as_str() {
-        "Звёзды" => "Звёзды.mp4",
-        "Камни" => "Камни.mp4",
-        "Крест" => "Крест.mp4",
-        "Небо" => "Небо.mp4",
-        "Поле" => "Поле.mp4",
-        _ => return Err("Unknown wallpaper.".into()),
-    };
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let path = resource_dir.join("wallpapers").join(file_name);
-    if !path.is_file() {
-        return Err(format!("Wallpaper resource not found: {file_name}"));
-    }
-    Ok(path.to_string_lossy().into_owned())
+    let file_name = wallpaper_file_name(&name).ok_or_else(|| "Unknown wallpaper.".to_string())?;
+    let resource_dir = app.path().resource_dir().ok();
+    let current_dir = std::env::current_dir().ok();
+    wallpaper_candidates(resource_dir.as_deref(), current_dir.as_deref(), file_name)
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("Wallpaper resource not found: {file_name}"))
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1035,6 +1085,56 @@ mod tests {
         assert!(is_web_playable_codec("vp9"));
         assert!(!is_web_playable_codec("hevc"));
         assert!(!is_web_playable_codec("mpeg4"));
+    }
+
+    #[test]
+    fn wallpaper_names_map_to_bundled_files() {
+        assert_eq!(wallpaper_file_name("Звёзды"), Some("Звёзды.mp4"));
+        assert_eq!(wallpaper_file_name("Поле"), Some("Поле.mp4"));
+        assert_eq!(wallpaper_file_name("Нет такого"), None);
+    }
+
+    /// Сборка кладёт обои в подкаталог `resources` каталога ресурсов: путь без
+    /// него (старый вариант) на Windows не находился.
+    #[test]
+    fn wallpaper_candidates_look_into_resources_subdir_first() {
+        let candidates = wallpaper_candidates(Some(Path::new("C:/app")), None, "Небо.mp4");
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("C:/app").join("resources").join("wallpapers").join("Небо.mp4")
+        );
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("C:/app").join("wallpapers").join("Небо.mp4")
+        );
+    }
+
+    /// Запуск из репозитория: файлы лежат в `src-tauri/resources/wallpapers`.
+    #[test]
+    fn wallpaper_candidates_cover_repository_layout() {
+        let candidates = wallpaper_candidates(None, Some(Path::new("T:/repo")), "Поле.mp4");
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("T:/repo")
+                .join("src-tauri")
+                .join("resources")
+                .join("wallpapers")
+                .join("Поле.mp4")
+        );
+    }
+
+    /// Настоящие обои из репозитория находятся по кандидатам `resolve_wallpaper`.
+    #[test]
+    fn real_wallpaper_is_found_in_repository_layout() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let expected = crate_dir.join("resources").join("wallpapers").join("Небо.mp4");
+        if !expected.is_file() {
+            return; // исходники без ресурсов — проверять нечего
+        }
+        let repo = crate_dir.parent().expect("корень репозитория");
+        let candidates = wallpaper_candidates(None, Some(repo), "Небо.mp4");
+        let found = candidates.into_iter().find(|path| path.is_file());
+        assert_eq!(found, Some(expected));
     }
 }
 

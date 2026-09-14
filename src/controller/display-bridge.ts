@@ -158,6 +158,23 @@ export async function ensureDisplayReady(): Promise<void> {
   console.log("[show] ensureDisplayReady done", { displayReady });
 }
 
+/**
+ * Зеркалит команду в превью «Сейчас на экране», чтобы оно показывало то же, что
+ * и окно вывода. Слайд приводим к тому же виду, что рисует окно вывода
+ * (`renderText`): заголовок отбрасываем, строки песни фильтруем, подпись стиха
+ * сохраняем — иначе превью и экран показывают разный текст.
+ */
+function mirrorToPreview(event: string, payload: unknown) {
+  if (!previewFrame) {
+    return;
+  }
+  postToPreview(previewFrame, {
+    channel: PREVIEW_CHANNEL,
+    type: event as any,
+    payload: event === EVENTS.setText ? slideTextPayload(payload as SetTextPayload) : payload,
+  } as any);
+}
+
 export async function sendToDisplay<T>(event: string, payload: T): Promise<void> {
   console.log("[show] sendToDisplay start", event, payload);
   // OBS получает те же команды, что и окно вывода (текст, оформление, очистка):
@@ -172,19 +189,38 @@ export async function sendToDisplay<T>(event: string, payload: T): Promise<void>
     console.error("[show] emitTo FAILED", event, err);
     throw err;
   }
-  // Mirror to preview iframe so it always shows what's live on the display.
-  // Слайд приводим к тому же виду, что рисует окно вывода (`renderText`):
-  // заголовок отбрасываем, строки песни фильтруем, подпись стиха сохраняем —
-  // иначе превью и экран показывают разный текст.
-  if (previewFrame) {
-    postToPreview(previewFrame, {
-      channel: PREVIEW_CHANNEL,
-      type: event as any,
-      payload:
-        event === EVENTS.setText
-          ? slideTextPayload(payload as SetTextPayload)
-          : payload,
-    } as any);
+  mirrorToPreview(event, payload);
+}
+
+/**
+ * Отправляет команду в окно вывода, только если оно уже открыто, и НЕ открывает
+ * его.
+ *
+ * Нужно для оформления: `ensureDisplayReady` создаёт окно вывода, поэтому
+ * сохранение стиля поднимало экран на втором мониторе и показывало фон стиля.
+ * Стиль — это только оформление: показ начинается по кнопке, а открытое окно
+ * само читает активный стиль из базы при запуске (`applyActiveStyleFromBackend`
+ * в `src/display/main.ts`), поэтому ничего не теряется.
+ *
+ * OBS и превью получают команду как обычно: оформление оверлея не зависит от
+ * того, открыт ли экран вывода.
+ *
+ * Возвращает false, если окно закрыто и отправлять было некуда.
+ */
+export async function sendToOpenDisplay<T>(event: string, payload: T): Promise<boolean> {
+  mirrorEventToObs(event, payload);
+  mirrorToPreview(event, payload);
+  if (!displayReady) {
+    console.log("[show] display closed — skip", event);
+    return false;
+  }
+  try {
+    await emitTo(DISPLAY, event, payload);
+    console.log("[show] emitTo done (open display)", event);
+    return true;
+  } catch (err) {
+    console.warn("[show] emitTo failed (display closed?)", event, err);
+    return false;
   }
 }
 

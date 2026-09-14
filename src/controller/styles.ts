@@ -11,7 +11,7 @@ import {
   type StyleConfig,
   type StyleRecord,
 } from "../shared/style";
-import { sendToDisplay } from "./display-bridge";
+import { sendToOpenDisplay } from "./display-bridge";
 import { previewSetStyle } from "./preview-frame";
 
 type StyleRow = {
@@ -27,6 +27,8 @@ export type StylesHooks = {
   refreshIcons: () => void;
   previewFrames: () => HTMLIFrameElement[];
   previewBackgroundEnabled?: (frame: HTMLIFrameElement) => boolean;
+  /** Идёт показ или включён постоянный фон: фон стиля сейчас должен быть виден. */
+  backgroundEnabled?: () => boolean;
 };
 
 let hooks: StylesHooks;
@@ -85,6 +87,15 @@ function previewStyle(frame: HTMLIFrameElement, config: StyleConfig, forceBackgr
   return config;
 }
 
+/**
+ * Фон стиля «живёт» только там, где он и так должен быть виден: во время показа
+ * или при включённом постоянном фоне. В остальных случаях (экран очищен, показа
+ * нет) применение стиля меняет только оформление и не включает фон.
+ */
+function isBackgroundLive(): boolean {
+  return hooks.backgroundEnabled?.() ?? false;
+}
+
 /** Re-push the active style to every preview frame (e.g. after iframe load). */
 export function refreshActiveStylePreviews() {
   for (const frame of hooks.previewFrames()) {
@@ -92,27 +103,30 @@ export function refreshActiveStylePreviews() {
   }
 }
 
+/**
+ * Рассылает оформление в превью и в окно вывода.
+ *
+ * Окно вывода НЕ открывается (`sendToOpenDisplay`): сохранение или выбор стиля
+ * не должны поднимать экран с фоном. Если окно закрыто, оно получит активный
+ * стиль из базы при следующем запуске.
+ */
 async function pushStyleEverywhere(config: StyleConfig, applyBackground: boolean) {
   activeConfig = config;
   const payload = { ...config } satisfies SetStylePayload;
   for (const frame of hooks.previewFrames()) {
     previewSetStyle(frame, previewStyle(frame, payload, applyBackground));
   }
-  try {
-    await sendToDisplay(EVENTS.setStyle, {
-      ...payload,
-      // Force a concrete media pick for random when applying live.
-      selectedMediaPath: applyBackground
-        ? resolveStyleMediaPath(config)
-        : config.selectedMediaPath,
-      backgroundMode:
-        applyBackground && config.backgroundMode === "random"
-          ? "media"
-          : config.backgroundMode,
-    });
-  } catch (err) {
-    console.warn("[styles] push to display failed", err);
-  }
+  await sendToOpenDisplay(EVENTS.setStyle, {
+    ...payload,
+    // Force a concrete media pick for random when applying live.
+    selectedMediaPath: applyBackground
+      ? resolveStyleMediaPath(config)
+      : config.selectedMediaPath,
+    backgroundMode:
+      applyBackground && config.backgroundMode === "random"
+        ? "media"
+        : config.backgroundMode,
+  });
 }
 
 export async function applyActiveStyleToOutputs(options?: { background?: boolean }) {
@@ -303,7 +317,7 @@ function renderStylesList() {
     li.innerHTML = `<span class="name">${style.name}</span>${
       style.isActive ? '<span class="badge">активен</span>' : ""
     }`;
-    li.addEventListener("click", () => void selectStyle(style.id));
+    li.addEventListener("click", () => void selectStyle(style.id, { activate: true }));
     list.appendChild(li);
   }
 }
@@ -329,12 +343,22 @@ async function reloadStyles(preferId?: number | null) {
   }
 }
 
-async function selectStyle(id: number) {
+/**
+ * Выбор стиля в списке.
+ *
+ * Клик по стилю делает его активным — кнопки «Применить к показу» больше нет,
+ * поэтому выбор в списке и есть применение стиля. Фон при этом не включается:
+ * он появляется сам при начале показа или при постоянном фоне (см.
+ * `isBackgroundLive`).
+ *
+ * `activate: false` — служебная перерисовка (загрузка списка, сохранение):
+ * активный стиль там уже расставлен базой.
+ */
+async function selectStyle(id: number, options?: { activate?: boolean }) {
   const style = styles.find((s) => s.id === id);
   if (!style) {
     return;
   }
-  logInfo("style", `выбран стиль «${style.name}» (#${id})`);
   selectedId = id;
   draftName = style.name;
   draft = { ...style.config, mediaPaths: [...style.config.mediaPaths] };
@@ -342,6 +366,32 @@ async function selectStyle(id: number) {
   $("#style-empty").hidden = true;
   fillEditorFromDraft();
   renderStylesList();
+  if (!options?.activate || style.isActive) {
+    logInfo("style", `выбран стиль «${style.name}» (#${id})`);
+    return;
+  }
+  await activateStyle(id, style.name);
+}
+
+/** Делает стиль активным для показов и рассылает оформление без фона. */
+async function activateStyle(id: number, name: string) {
+  try {
+    const active = await invoke<StyleRow | null>("set_active_style", { id });
+    if (!active) {
+      return;
+    }
+    const record = parseRow(active);
+    activeConfig = record.config;
+    for (const style of styles) {
+      style.isActive = style.id === id;
+    }
+    renderStylesList();
+    await pushStyleEverywhere(activeConfig, isBackgroundLive());
+    logInfo("style", `активен стиль «${name}» (#${id})`);
+  } catch (error) {
+    logError("style", `не удалось сделать стиль активным (#${id})`, { error: String(error) });
+    window.alert(String(error));
+  }
 }
 
 async function createStyle() {
@@ -368,10 +418,16 @@ async function saveCurrentStyle() {
     configJson: JSON.stringify(draft),
   });
   const record = parseRow(saved);
+  // Сохранённый стиль становится активным: показ идёт с ним, а фон подключается
+  // сам — при начале показа или при постоянном фоне (см. `isBackgroundLive`).
+  // Само сохранение фон на экране не включает и окно вывода не открывает.
+  await invoke<StyleRow | null>("set_active_style", { id: record.id }).catch((error) => {
+    logWarn("style", `не удалось сделать стиль активным (#${record.id})`, {
+      error: String(error),
+    });
+  });
   await reloadStyles(record.id);
-  if (record.isActive || styles.find((s) => s.id === record.id)?.isActive) {
-    await pushStyleEverywhere(record.config, true);
-  }
+  await pushStyleEverywhere(activeConfig, isBackgroundLive());
   logInfo("style", `сохранён стиль «${draftName}» (#${record.id})`);
 }
 
@@ -387,31 +443,10 @@ async function deleteCurrentStyle() {
     await invoke("delete_style", { id: selectedId });
     selectedId = null;
     await reloadStyles();
-    await applyActiveStyleToOutputs({ background: true });
+    await applyActiveStyleToOutputs({ background: isBackgroundLive() });
   } catch (err) {
     logError("style", "не удалось удалить стиль", { error: String(err) });
     window.alert(String(err));
-  }
-}
-
-async function activateCurrentStyle() {
-  if (selectedId == null) {
-    return;
-  }
-  draft = readDraftFromEditor();
-  draftName = input("#style-name").value.trim() || draftName;
-  await invoke("save_style", {
-    id: selectedId,
-    name: draftName,
-    configJson: JSON.stringify(draft),
-  });
-  const active = await invoke<StyleRow | null>("set_active_style", { id: selectedId });
-  if (active) {
-    const record = parseRow(active);
-    activeConfig = record.config;
-    await reloadStyles(record.id);
-    await pushStyleEverywhere(record.config, true);
-    logInfo("style", `активирован стиль «${draftName}» (#${record.id})`);
   }
 }
 
@@ -501,7 +536,6 @@ export function bindStylesUi(h: StylesHooks) {
   $("#style-add").addEventListener("click", () => void createStyle());
   $("#style-save").addEventListener("click", () => void saveCurrentStyle());
   $("#style-delete").addEventListener("click", () => void deleteCurrentStyle());
-  $("#style-activate").addEventListener("click", () => void activateCurrentStyle());
   $("#style-media-add").addEventListener("click", () => void addMediaFiles());
   $("#style-media-remove").addEventListener("click", () => removeSelectedMedia());
 

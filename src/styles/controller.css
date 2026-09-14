@@ -1749,12 +1749,8 @@ body.col-resizing * {
 .styles-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-}
-
-.styles-actions .tool-btn {
-  flex: 1;
-  justify-content: center;
 }
 
 .style-editor {
