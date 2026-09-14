@@ -221,6 +221,31 @@ function bumpShow(songId?: number) {
   saveJson(STORAGE.shows, counts);
 }
 
+/**
+ * Сброс статистики показов (кнопка в «Обзоре»).
+ *
+ * Обнуляет счётчики, по которым строится топ: после сброса список «Обзор»
+ * пуст и наполняется заново по мере показов. Спрашиваем подтверждение — действие
+ * необратимо, поэтому диалог асинхронный и ждём ответа пользователя
+ * (`window.confirm` для этого не годится, см. `confirmDialog`).
+ */
+async function resetShowCounts() {
+  if (Object.keys(showCounts()).length === 0) {
+    window.alert("Статистика показов уже пуста — сбрасывать нечего.");
+    return;
+  }
+  const ok = await confirmDialog(
+    "Сбросить статистику показов? Счётчики всех песен обнулятся, а список «Обзор» станет пустым. Отменить это действие нельзя.",
+    { title: "Сброс статистики", kind: "warning", okLabel: "Сбросить", cancelLabel: "Отмена" },
+  );
+  if (!ok) {
+    return;
+  }
+  localStorage.removeItem(STORAGE.shows);
+  logInfo("ui", "статистика показов сброшена");
+  await loadOverview();
+}
+
 function bookGroup(index: number): string {
   if (index < 5) return "g0";
   if (index < 17) return "g1";
@@ -1456,16 +1481,25 @@ async function loadOverview() {
     collectionId: Number.isFinite(collectionId as number) ? collectionId : null,
   });
   const counts = showCounts();
+  // В «Обзор» попадают только песни, которые уже выходили в показ: на новом
+  // компьютере список пуст и наполняется по мере работы (счётчик ведёт
+  // `bumpShow`). Иначе после установки здесь висел бы алфавитный список песен
+  // поставляемого сборника с нулём показов.
   const ranked = hits
     .map((hit) => ({
       ...hit,
       shows: counts[String(hit.id)] || 0,
     }))
+    .filter((hit) => hit.shows > 0)
     .sort((a, b) => b.shows - a.shows || a.title.localeCompare(b.title, "ru"))
     .slice(0, top);
 
   const body = $("#overview-body");
   body.replaceChildren();
+  // Пустой список — показываем подсказку вместо таблицы, а не пустую сетку.
+  const isEmpty = ranked.length === 0;
+  $("#overview-empty").hidden = !isEmpty;
+  $("#overview-table-wrap").hidden = isEmpty;
   ranked.forEach((hit, index) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${index + 1}</td><td>${hit.id}</td><td>${hit.title}</td><td>${hit.shows}</td>`;
@@ -2537,6 +2571,7 @@ function bind() {
   bindHotkeysUi();
 
   select("#overview-collection").addEventListener("change", () => void loadOverview());
+  $("#overview-reset").addEventListener("click", () => void resetShowCounts());
 
   let bibleSearchTimer = 0;
   input("#bible-search-query").addEventListener("input", () => {
@@ -2686,7 +2721,7 @@ async function boot() {
   try {
     bind();
   } catch (error) {
-    // Один не найденный элемент не должен оставлять пустыми дашборд и списки:
+    // Один не найденный элемент не должен оставлять пустыми обзор и списки:
     // пишем ошибку в журнал и продолжаем запуск.
     logError("boot", "часть обработчиков не привязана — интерфейс может работать неполно", error);
   }
@@ -2700,7 +2735,7 @@ async function boot() {
 
   await bootStyles();
   logInfo("boot", "стили загружены");
-  // Ширины левых колонок («Песни», «Библия», «Трансляция») восстанавливаем из БД.
+  // Ширины левых колонок («Песни», «Библия», «Объявления», «Трансляция») восстанавливаем из БД.
   await bootColumnSplitters().catch((error) => {
     logError("boot", "не удалось восстановить ширины колонок", error);
   });

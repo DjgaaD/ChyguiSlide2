@@ -82,6 +82,21 @@ pub fn run() {
             // Файлы прошлого обновления (скачанная часть и установщик) в кэше
             // больше не нужны: их удаление идёт в фоне и не задерживает запуск.
             updater::cleanup_staging(&handle);
+            // Главное окно открывается развёрнутым на весь экран (`maximized` в
+            // `tauri.conf.json`). Пишем фактические размеры: по журналу видно,
+            // применился ли режим на этом компьютере.
+            if let Some(window) = app.get_webview_window(windows::CONTROLLER_LABEL) {
+                match (window.is_maximized(), window.outer_size()) {
+                    (Ok(maximized), Ok(size)) => logger::info(
+                        "app",
+                        &format!(
+                            "окно контроллера: развёрнуто = {maximized}, {}x{}",
+                            size.width, size.height
+                        ),
+                    ),
+                    _ => logger::warn("app", "не удалось прочитать состояние окна контроллера"),
+                }
+            }
             logger::info("app", "инициализация завершена");
             // Display opens on demand (show / persistent second-screen background).
             Ok(())

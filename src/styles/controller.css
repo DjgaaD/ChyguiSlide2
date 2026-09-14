@@ -182,12 +182,13 @@ textarea {
 }
 
 #view-overview.active {
-  grid-template-columns: 1.4fr 0.8fr;
+  grid-template-columns: 1fr;
 }
 
 #view-songs.page-songs.active,
 #view-broadcast.page-broadcast.active,
-#view-bible.page-bible.active {
+#view-bible.page-bible.active,
+#view-announcements.page-announcements.active {
   /* Ширина левой колонки — своя переменная у каждой вкладки; её ставит
      `src/controller/column-splitter.ts` (перетаскивание разделителя).
      Средняя колонка забирает остаток, правая — фиксированная доля и при
@@ -197,11 +198,6 @@ textarea {
   --resizer-width: 6px;
   grid-template-columns:
     var(--left-col-width) var(--resizer-width) minmax(0, 1fr) var(--right-col-width);
-  grid-template-rows: 1fr;
-}
-
-#view-announcements.page-announcements.active {
-  grid-template-columns: 17fr 46fr 37fr;
   grid-template-rows: 1fr;
 }
 
@@ -689,6 +685,18 @@ body.col-resizing * {
   color: var(--muted);
 }
 
+/* Кнопка «Сбросить статистику»: высота и рамка как у полей «Сборник»/«Топ»,
+   выровнена по их нижнему краю (подписи над полями сдвигают их вниз). */
+.overview-reset {
+  width: auto;
+  align-self: flex-end;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  background: var(--input-bg);
+}
+
 .content-title {
   margin: 0;
   font-size: 22px;
@@ -746,6 +754,11 @@ body.col-resizing * {
   flex: 1;
   border: 1px solid var(--stroke);
   background: var(--input-bg);
+}
+
+/* Пустой «Обзор»: вместо пустой сетки показывается подсказка. */
+.table-wrap[hidden] {
+  display: none;
 }
 
 .data-table {

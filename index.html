@@ -41,7 +41,7 @@
         </div>
       </header>
 
-      <!-- ДАШБОРД -->
+      <!-- ОБЗОР -->
       <section id="view-overview" class="view active" data-view="overview">
         <div class="col col-wide">
           <div class="toolbar-row">
@@ -59,8 +59,16 @@
                 <option value="100">100</option>
               </select>
             </label>
+            <button
+              type="button"
+              class="tool-btn overview-reset"
+              id="overview-reset"
+              title="Обнулить счётчики показов всех песен"
+            >
+              <i data-lucide="rotate-ccw"></i>Сбросить статистику
+            </button>
           </div>
-          <div class="table-wrap">
+          <div class="table-wrap" id="overview-table-wrap">
             <table class="data-table">
               <thead>
                 <tr>
@@ -73,9 +81,9 @@
               <tbody id="overview-body"></tbody>
             </table>
           </div>
-        </div>
-        <div class="col muted-panel">
-          <p class="hint">Топ песен по числу показов. Клик по строке откроет песню.</p>
+          <div id="overview-empty" class="empty-hint">
+            Пока ничего не показано. Список заполнится, когда песни начнут выходить в показ.
+          </div>
         </div>
       </section>
 
@@ -257,6 +265,16 @@
 
           <ul id="ann-list" class="song-list"></ul>
         </aside>
+
+        <!-- Разделитель ширины списка объявлений: своя ширина у вкладки «Объявления». -->
+        <div
+          class="resizer"
+          data-resizer="announcements"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину списка объявлений"
+          title="Перетащите, чтобы изменить ширину (двойной клик — по умолчанию)"
+        ></div>
 
         <section class="col-center">
           <div id="ann-empty" class="empty-hint">Выберите объявление, чтобы увидеть слайды.</div>

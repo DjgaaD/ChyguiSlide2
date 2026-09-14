@@ -18,6 +18,7 @@
         "height": 800,
         "minWidth": 960,
         "minHeight": 540,
+        "maximized": true,
         "url": "index.html"
       }
     ],

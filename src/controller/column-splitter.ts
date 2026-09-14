@@ -1,5 +1,6 @@
 /**
- * Регулировка ширины левой колонки на вкладках «Песни», «Библия» и «Трансляция».
+ * Регулировка ширины левой колонки на вкладках «Песни», «Библия»,
+ * «Объявления» и «Трансляция».
  *
  * Раскладка страниц — CSS Grid: левая колонка берёт ширину из переменной
  * `--left-col-width`, средняя забирает остаток (`minmax(0, 1fr)`), правая имеет
@@ -11,16 +12,17 @@ import { invoke } from "../shared/ipc";
 import { logError, logInfo } from "../shared/logger";
 
 /** Вкладки с регулируемой левой колонкой. */
-export type SplitterTab = "songs" | "bible" | "broadcast";
+export type SplitterTab = "songs" | "bible" | "announcements" | "broadcast";
 
 /** Ключи настроек в таблице `app_settings` — своя ширина на каждую вкладку. */
 export const LEFT_WIDTH_KEYS: Record<SplitterTab, string> = {
   songs: "ui.songs.left_width",
   bible: "ui.bible.left_width",
+  announcements: "ui.announcements.left_width",
   broadcast: "ui.broadcast.left_width",
 };
 
-const TABS: SplitterTab[] = ["songs", "bible", "broadcast"];
+const TABS: SplitterTab[] = ["songs", "bible", "announcements", "broadcast"];
 
 /** Минимальная ширина левой колонки, px. */
 const MIN_LEFT_WIDTH = 200;
