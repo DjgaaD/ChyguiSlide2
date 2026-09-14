@@ -109,6 +109,8 @@
               </button>
               <div class="menu-panel" id="song-menu" hidden>
                 <button type="button" data-song-action="manual"><i data-lucide="pen-line"></i>Набрать вручную</button>
+                <button type="button" data-song-action="import-presentation"><i data-lucide="presentation"></i>Импорт из презентации</button>
+                <button type="button" data-song-action="import-website"><i data-lucide="globe"></i>Импорт с сайта</button>
                 <button type="button" data-song-action="edit"><i data-lucide="pencil"></i>Изменить</button>
                 <button type="button" data-song-action="delete"><i data-lucide="trash-2"></i>Удалить</button>
               </div>
@@ -864,6 +866,31 @@
           </div>
         </div>
       </div>
+    </dialog>
+    <!-- Импорт песни с сайта -->
+    <dialog id="import-url" class="modal">
+      <form method="dialog" class="modal-card compact" id="import-url-form">
+        <h2 class="modal-title">Импорт с сайта</h2>
+        <label class="editor-field grow">
+          Адрес страницы с текстом песни
+          <input
+            id="import-url-input"
+            class="field"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="https://example.com/song"
+          />
+        </label>
+        <p class="hint">
+          Текст берётся со страницы автоматически, без заголовков и меню сайта.
+          Проверьте результат в редакторе перед сохранением.
+        </p>
+        <div class="modal-actions">
+          <button type="submit" class="show-btn" id="import-url-ok">Загрузить</button>
+          <button type="button" class="tool-btn ghost-btn" id="import-url-cancel" value="cancel">Отмена</button>
+        </div>
+      </form>
     </dialog>
   </body>
 </html>

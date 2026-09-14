@@ -22,7 +22,13 @@ type OpenOptions = {
   mode: "create" | "edit";
   song?: SongDetail | null;
   collections: Collection[];
-  preferredCollectionId?: number | null;
+  /**
+   * Слайды нового текста — для импорта из презентации или с сайта. Пользователь
+   * открывает редактор уже заполненным и сохраняет результат после проверки.
+   */
+  initialSlides?: EditorSlide[];
+  /** Название песни для импорта (имя файла презентации или строка со страницы). */
+  initialTitle?: string;
   onSaved: (song: SongDetail) => void | Promise<void>;
 };
 
@@ -56,21 +62,30 @@ function dialog(): HTMLDialogElement {
   return $("#song-editor") as HTMLDialogElement;
 }
 
+/** Длина строки, после которой она считается текстом песни, а не заголовком. */
+const HEADING_MAX_CHARS = 40;
+
 export function parseSlideText(raw: string, index: number): EditorSlide {
   const lines = raw.split("\n");
   const first = (lines[0] || "").trim();
-  if (/^припев/i.test(first)) {
+  const rest = lines.slice(1).join("\n").trimEnd();
+  const isChorus = /^припев/i.test(first);
+  const isVerse = /^куплет/i.test(first);
+  // Заголовок — короткая подпись («Припев:», «Куплет 1»). Длинная первая строка
+  // это уже текст песни: импорт из презентации или с сайта может прийти одной
+  // строкой, и тогда весь куплет оказался бы в заголовке слайда.
+  if ((isChorus || isVerse) && first.length <= HEADING_MAX_CHARS) {
     return {
-      kind: "chorus",
-      heading: first || "Припев",
-      body: lines.slice(1).join("\n").trimEnd(),
+      kind: isChorus ? "chorus" : "verse",
+      heading: first,
+      body: rest,
     };
   }
-  if (/^куплет/i.test(first)) {
+  if (isChorus || isVerse) {
     return {
-      kind: "verse",
-      heading: first,
-      body: lines.slice(1).join("\n").trimEnd(),
+      kind: isChorus ? "chorus" : "verse",
+      heading: isChorus ? "Припев" : `Куплет ${index + 1}`,
+      body: raw.trimEnd(),
     };
   }
   return {
@@ -78,6 +93,39 @@ export function parseSlideText(raw: string, index: number): EditorSlide {
     heading: `Куплет ${index + 1}`,
     body: raw.trimEnd(),
   };
+}
+
+/**
+ * Разбивает сплошной текст на слайды редактора.
+ *
+ * Так приходит текст из презентации и с сайта (`importer.rs`): блоки разделены
+ * пустой строкой — каждый блок становится куплетом. Строка, начинающаяся с
+ * «Припев», распознаётся как припев (см. `parseSlideText`).
+ */
+export function slidesFromPlainText(text: string): EditorSlide[] {
+  const blocks = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  if (blocks.length === 0) {
+    return [{ kind: "verse", heading: "Куплет 1", body: "" }];
+  }
+  const parsed = blocks.map((block, index) => parseSlideText(block, index));
+  // Нумерация куплетов — по порядку, как в `renumberVerseHeadings`: свои
+  // заголовки («Куплет финальный») при этом не трогаются.
+  let verses = 0;
+  for (const slide of parsed) {
+    if (slide.kind !== "verse") {
+      continue;
+    }
+    verses += 1;
+    const heading = slide.heading.trim();
+    if (!heading || /^куплет(\s+\d+)?$/i.test(heading)) {
+      slide.heading = `Куплет ${verses}`;
+    }
+  }
+  return parsed;
 }
 
 export function serializeSlide(slide: EditorSlide): string {
@@ -320,19 +368,22 @@ export function openSongEditor(options: OpenOptions) {
   $("#song-editor-title").textContent =
     options.mode === "edit" ? "Изменить песню" : "Новая песня";
 
+  // У новой песни сборник не подставляем: пользователь выбирает его сам,
+  // иначе песня легко уезжает в чужой сборник («Не выбрано» в списке).
   fillCollections(
     options.collections,
-    options.mode === "edit"
-      ? options.song?.collection_id
-      : options.preferredCollectionId,
+    options.mode === "edit" ? options.song?.collection_id : null,
   );
 
-  input("#se-title").value = options.song?.title || "";
+  input("#se-title").value = options.song?.title || options.initialTitle || "";
   input("#se-number").value =
     options.mode === "edit" && options.song ? String(options.song.id) : "";
 
   if (options.song?.slides?.length) {
     slides = options.song.slides.map((s, i) => parseSlideText(s, i));
+  } else if (options.initialSlides?.length) {
+    // Импорт: текст уже разбит на слайды (см. `slidesFromPlainText`).
+    slides = options.initialSlides.map((slide) => ({ ...slide }));
   } else {
     slides = [{ kind: "verse", heading: "Куплет 1", body: "" }];
   }

@@ -24,6 +24,14 @@ reqwest = { version = "0.12", features = ["blocking"] }
 sha2 = "0.10"
 flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Импорт текста песен со сторонних сайтов: разбор HTML (`scraper`) и определение
+# кодировки страницы (`encoding_rs` уже есть в дереве как зависимость `reqwest`,
+# отдельной сборки не требует — нужен для сайтов с `windows-1251`).
+scraper = "0.26"
+encoding_rs = "0.8"
+# Разбор адреса страницы: `url` уже есть в дереве как зависимость Tauri, поэтому
+# отдельной сборки не требует.
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 # Win32_System_Registry нужен для `ShellExecuteExW`: структура

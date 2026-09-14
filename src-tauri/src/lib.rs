@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod importer;
 mod seed;
 mod logger;
 mod obs;
@@ -190,6 +191,8 @@ pub fn run() {
             commands::log_events,
             commands::get_log_info,
             commands::open_logs_folder,
+            importer::parse_presentation,
+            importer::fetch_website_song,
             obs::obs_settings,
             obs::obs_save_settings,
             obs::obs_push_slide,

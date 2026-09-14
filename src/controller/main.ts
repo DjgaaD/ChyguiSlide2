@@ -11,21 +11,28 @@ import {
 import {
   ALargeSmall,
   ArrowUpDown,
-  Book,
   BookOpenText,
   createIcons,
+  DatabaseBackup,
   Folder,
+  Globe,
   Hash,
+  Info,
+  Keyboard,
   LayoutDashboard,
   List,
   Megaphone,
   Music,
+  Paintbrush,
+  Palette,
   PenLine,
   Pencil,
   Plus,
+  Presentation,
   Radio,
   RotateCcw,
   Save,
+  ScrollText,
   Settings,
   Trash2,
   Upload,
@@ -59,6 +66,7 @@ import {
   openCollectionDeleteDialog,
   openCollectionEditor,
   openSongEditor,
+  slidesFromPlainText,
   type Collection,
 } from "./song-editor";
 import {
@@ -78,6 +86,8 @@ type SongDetail = {
   slides: string[];
   collection_id?: number | null;
 };
+/** Ответ `fetch_website_song`: название песни со страницы и её текст. */
+type WebsiteSong = { title: string; text: string };
 type Verse = { book: string; chapter: number; verse: number; text: string };
 type Announcement = { id: string; title: string; text: string };
 type PendingSlide = {
@@ -1095,6 +1105,131 @@ async function importLegacyChorusJson() {
     console.error("Legacy chorus JSON import failed", error);
     window.alert(`Ошибка импорта: ${String(error)}`);
   }
+}
+
+/* ——— Импорт песен: из презентации и с сайта ——— */
+
+/**
+ * Импорт песни из презентации.
+ *
+ * Пользователь выбирает файл `.pptx`/`.odp`, Rust (`importer.rs`) вытаскивает
+ * текст слайдов, а редактор новой песни открывается уже заполненным: остаётся
+ * проверить текст и сохранить.
+ */
+async function importSongFromPresentation() {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Презентация", extensions: ["pptx", "odp"] }],
+  });
+  if (!selected || Array.isArray(selected)) {
+    return;
+  }
+  try {
+    const text = await invoke<string>("parse_presentation", { path: selected });
+    openImportedSong(text, fileStem(selected));
+  } catch (error) {
+    logError("import", "не удалось разобрать презентацию", { error: String(error) });
+    window.alert(`Не удалось разобрать презентацию: ${String(error)}`);
+  }
+}
+
+/**
+ * Импорт песни с сайта: адрес спрашивается своей формой, потому что `prompt` в
+ * WebView2 не поддерживается (вызов молча возвращает `null`).
+ */
+async function importSongFromWebsite() {
+  const url = await askWebsiteUrl();
+  if (!url) {
+    return;
+  }
+  try {
+    const song = await invoke<WebsiteSong>("fetch_website_song", { url });
+    openImportedSong(song.text, song.title);
+  } catch (error) {
+    logError("import", "не удалось загрузить текст песни", { url, error: String(error) });
+    window.alert(`Не удалось загрузить текст песни: ${String(error)}`);
+  }
+}
+
+/**
+ * Открывает редактор новой песни с импортированным текстом.
+ *
+ * Название подставляет источник: у презентации — имя файла, у сайта — первая
+ * строка названия песни со страницы.
+ */
+function openImportedSong(text: string, title: string) {
+  const slides = slidesFromPlainText(text);
+  logInfo("import", `открыт редактор импортированной песни: слайдов ${slides.length}`);
+  openSongEditor({
+    mode: "create",
+    collections,
+    initialSlides: slides,
+    initialTitle: title,
+    onSaved: onSongSaved,
+  });
+}
+
+/** Имя файла без пути и расширения — им предзаполняется название песни. */
+function fileStem(path: string): string {
+  const name = path.split(/[\\/]/).pop() ?? "";
+  return name.replace(/\.[^.]+$/, "").trim();
+}
+
+/** Ответ на вопрос об адресе страницы: `resolve` ожидающего кода. */
+let urlRequest: ((value: string | null) => void) | null = null;
+
+function urlDialog(): HTMLDialogElement {
+  return $("#import-url") as HTMLDialogElement;
+}
+
+/**
+ * Закрывает окно ввода адреса и отдаёт ответ: строку — при подтверждении,
+ * `null` — при отмене.
+ */
+function closeUrlDialog(value: string | null) {
+  if (urlDialog().open) {
+    urlDialog().close();
+  }
+  const resolve = urlRequest;
+  urlRequest = null;
+  resolve?.(value);
+}
+
+/**
+ * Спрашивает адрес страницы своей формой.
+ *
+ * `window.prompt` в WebView2 не реализован (вызов молча возвращает `null`),
+ * поэтому вопрос задаётся модальным окном `#import-url`.
+ */
+function askWebsiteUrl(): Promise<string | null> {
+  const dlg = urlDialog();
+  input("#import-url-input").value = "";
+  // Если предыдущий вопрос остался без ответа, закрываем его без результата.
+  urlRequest?.(null);
+  return new Promise((resolve) => {
+    urlRequest = resolve;
+    dlg.showModal();
+    input("#import-url-input").focus();
+  });
+}
+
+/** Привязка окна ввода адреса: подтверждение, отмена и закрытие по Esc. */
+function bindImportUrlDialog() {
+  $("#import-url-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const url = input("#import-url-input").value.trim();
+    if (!url) {
+      window.alert("Введите адрес страницы с текстом песни.");
+      return;
+    }
+    closeUrlDialog(url);
+  });
+  $("#import-url-cancel").addEventListener("click", () => closeUrlDialog(null));
+  urlDialog().addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeUrlDialog(null);
+  });
 }
 
 async function openSong(id: number) {
@@ -2147,10 +2282,16 @@ function bindSongsUi() {
         openSongEditor({
           mode: "create",
           collections,
-          preferredCollectionId:
-            selectedCollectionFilter() ?? preferredCollectionId,
           onSaved: onSongSaved,
         });
+        return;
+      }
+      if (action === "import-presentation") {
+        void importSongFromPresentation();
+        return;
+      }
+      if (action === "import-website") {
+        void importSongFromWebsite();
         return;
       }
       if (action === "edit") {
@@ -2326,6 +2467,7 @@ function bind() {
   }
   bindSongsUi();
   bindSongEditor();
+  bindImportUrlDialog();
   bindCollectionEditor();
   bindBroadcast({
     persistentEnabled: persistentDisplayEnabled,
