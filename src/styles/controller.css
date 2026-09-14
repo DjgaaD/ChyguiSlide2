@@ -96,10 +96,11 @@ textarea {
   margin-left: 20px;
 }
 
+/* Логотип приложения рядом с названием в шапке (см. `public/logo.png`). */
 .brand-icon {
-  width: 22px;
-  height: 22px;
-  color: var(--accent);
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
@@ -1620,6 +1621,16 @@ body.col-resizing * {
   cursor: pointer;
   white-space: nowrap;
   text-align: left;
+  /* Иконка Lucide + подпись: держим их в одну строку с ровным отступом. */
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-tab svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .settings-tab:hover {
