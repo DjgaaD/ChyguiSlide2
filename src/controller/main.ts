@@ -1,4 +1,4 @@
-import { invoke, listen, open, readTextFile, save } from "../shared/ipc";
+import { confirmDialog, invoke, listen, open, readTextFile, save } from "../shared/ipc";
 import { installExternalLinkHandler } from "../shared/external-links";
 import {
   fetchJournalInfo,
@@ -826,7 +826,7 @@ async function restoreDatabase() {
   if (!source || Array.isArray(source)) {
     return;
   }
-  if (!window.confirm("Restore this database backup? Current data will be replaced.")) {
+  if (!(await confirmDialog("Restore this database backup? Current data will be replaced."))) {
     return;
   }
   try {
@@ -1369,8 +1369,9 @@ async function deleteSelectedSong() {
     window.alert("Сначала выберите песню.");
     return;
   }
-  const ok = window.confirm(
-    `Вы точно хотите удалить песню «${selectedSong.title}» (№ ${selectedSong.id})?\n\nДа — удалить, Нет — отмена.`,
+  const ok = await confirmDialog(
+    `Вы точно хотите удалить песню «${selectedSong.title}» (№ ${selectedSong.id})?`,
+    { title: "Удаление песни", kind: "warning", okLabel: "Удалить", cancelLabel: "Отмена" },
   );
   if (!ok) {
     return;
@@ -1735,13 +1736,13 @@ function saveAnnEditor() {
   }
 }
 
-function deleteSelectedAnnouncement() {
+async function deleteSelectedAnnouncement() {
   const item = selectedAnnouncement();
   if (!item) {
     window.alert("Сначала выберите объявление.");
     return;
   }
-  if (!window.confirm(`Удалить объявление «${item.title}»?`)) {
+  if (!(await confirmDialog(`Удалить объявление «${item.title}»?`))) {
     return;
   }
   announcements = announcements.filter((a) => a.id !== item.id);
@@ -2420,7 +2421,7 @@ function bind() {
       } else if (action === "edit") {
         openAnnEditor("edit");
       } else if (action === "delete") {
-        deleteSelectedAnnouncement();
+        void deleteSelectedAnnouncement();
       }
     });
   });

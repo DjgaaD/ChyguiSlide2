@@ -1,4 +1,4 @@
-import { invoke } from "../shared/ipc";
+import { confirmDialog, invoke } from "../shared/ipc";
 import { logError, logInfo } from "../shared/logger";
 
 export type Collection = { id: number; title: string };
@@ -532,9 +532,10 @@ export function bindCollectionEditor() {
     showCdStep("songs");
   });
 
-  $("#cd-delete-songs").addEventListener("click", () => {
-    const ok = window.confirm(
+  $("#cd-delete-songs").addEventListener("click", async () => {
+    const ok = await confirmDialog(
       "Удалить все песни этого сборника вместе со сборником? Это нельзя отменить.",
+      { title: "Удаление сборника", kind: "warning", okLabel: "Удалить", cancelLabel: "Отмена" },
     );
     if (!ok) {
       return;

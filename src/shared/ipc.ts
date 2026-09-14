@@ -2,8 +2,9 @@
  * Обёртки над Tauri IPC: каждое обращение к бэкенду, каждый диалог и каждое
  * событие попадает в журнал приложения (см. `./logger`).
  *
- * Модули импортируют `invoke`/`listen`/`emit`/`open`/`save`/`readTextFile`
- * отсюда вместо пакетов `@tauri-apps/*`, поэтому журналирование включено везде.
+ * Модули импортируют `invoke`/`listen`/`emit`/`open`/`save`/`confirmDialog`/
+ * `readTextFile` отсюда вместо пакетов `@tauri-apps/*`, поэтому журналирование
+ * включено везде.
  */
 import {
   convertFileSrc as tauriConvertFileSrc,
@@ -22,8 +23,10 @@ import {
   type UnlistenFn,
 } from "@tauri-apps/api/event";
 import {
+  confirm as tauriConfirm,
   open as tauriOpen,
   save as tauriSave,
+  type ConfirmDialogOptions,
   type OpenDialogOptions,
   type OpenDialogReturn,
   type SaveDialogOptions,
@@ -123,6 +126,23 @@ export function save(options?: SaveDialogOptions): Promise<string | null> {
   return tauriSave(options).then((result) => {
     logInfo("dialog", "← save", result ?? "отменено");
     return result;
+  });
+}
+
+/**
+ * Диалог подтверждения с журналированием ответа.
+ *
+ * Важно: плагин `dialog` при инициализации переопределяет `window.confirm` на
+ * асинхронную функцию (см. `init-iife.js` в `tauri-plugin-dialog`), поэтому
+ * привычная проверка `if (!window.confirm(...))` никогда не срабатывает: она
+ * получает промис (он всегда «истинный») и действие выполняется без вопроса.
+ * Для подтверждений используем этот враппер.
+ */
+export function confirmDialog(message: string, options?: ConfirmDialogOptions): Promise<boolean> {
+  logDebug("dialog", `→ confirm: ${message}`, options);
+  return tauriConfirm(message, options).then((confirmed) => {
+    logInfo("dialog", `← confirm: ${confirmed ? "подтверждено" : "отменено"}`, { message });
+    return confirmed;
   });
 }
 

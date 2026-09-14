@@ -1,4 +1,4 @@
-import { invoke, listen, open } from "../shared/ipc";
+import { confirmDialog, invoke, listen, open } from "../shared/ipc";
 import { logInfo } from "../shared/logger";
 import {
   EVENTS,
@@ -392,7 +392,7 @@ async function renderSavedList() {
     remove.innerHTML = `<i data-lucide="trash-2"></i>`;
     remove.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (!window.confirm(`Удалить плейлист «${pl.name}»?`)) {
+      if (!(await confirmDialog(`Удалить плейлист «${pl.name}»?`))) {
         return;
       }
       await invoke("delete_playlist", { id: pl.id });
@@ -918,8 +918,8 @@ async function loadSavedPlaylist(id: number) {
   }
 }
 
-function resetQuickPlaylist() {
-  if (quick.length > 0 && !window.confirm("Сбросить быстрый плейлист?")) {
+async function resetQuickPlaylist() {
+  if (quick.length > 0 && !(await confirmDialog("Сбросить быстрый плейлист?"))) {
     return;
   }
   quick = [];
@@ -933,7 +933,7 @@ export function bindBroadcast(h: BroadcastHooks) {
 
   $("#bc-add-media").addEventListener("click", () => void addMediaFiles());
   $("#bc-save-playlist").addEventListener("click", () => void saveQuickPlaylist());
-  $("#bc-reset-quick").addEventListener("click", () => resetQuickPlaylist());
+  $("#bc-reset-quick").addEventListener("click", () => void resetQuickPlaylist());
   $("#bc-start-show").addEventListener("click", () => {
     console.log("[show] click Начать показ");
     void startShow();

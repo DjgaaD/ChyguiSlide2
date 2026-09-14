@@ -1,4 +1,4 @@
-import { invoke, listen, open } from "../shared/ipc";
+import { confirmDialog, invoke, listen, open } from "../shared/ipc";
 import { logError, logInfo, logWarn } from "../shared/logger";
 import { EVENTS, type SetStylePayload } from "../shared/events";
 import {
@@ -379,7 +379,7 @@ async function deleteCurrentStyle() {
   if (selectedId == null) {
     return;
   }
-  if (!window.confirm("Удалить этот стиль?")) {
+  if (!(await confirmDialog("Удалить этот стиль?"))) {
     return;
   }
   try {
